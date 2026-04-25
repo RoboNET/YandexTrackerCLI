@@ -2,6 +2,7 @@ namespace YandexTrackerCLI.Auth.Federated;
 
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using YandexTrackerCLI.Core;
 
 /// <summary>
 /// File-backed store for a per-profile ECDSA P-256 key pair used to sign DPoP
@@ -39,7 +40,7 @@ public sealed class DPoPKeyStore
         System.IO.Path.Combine(
             Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
                 ?? System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    PathResolver.ResolveHome(),
                     ".config"),
             "yandex-tracker",
             "federated-keys",

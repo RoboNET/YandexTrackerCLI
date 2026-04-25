@@ -16,8 +16,9 @@
 
 | Команда | Назначение |
 |---|---|
-| `yt skill install` | Установить во все 5 ассистентов (default `--target all --scope global` — Claude+Codex+Gemini+Cursor; Copilot global → skipped) |
-| `yt skill install --target claude --scope project` | В `./.claude/skills/yt/SKILL.md` |
+| `yt skill install` (TTY, без флагов) | Интерактивный prompt: выбор ассистентов + scope + подтверждение перезаписи. По умолчанию предлагает «обнаруженные» (видит `~/.claude`, `~/.gemini`, …). |
+| `yt skill install --no-prompt` | Скрипт-режим: ставит во все 5 ассистентов (`--target all --scope global` — Claude+Codex+Gemini+Cursor; Copilot global → skipped). Используется в CI и при перенаправлении stdin/stdout. |
+| `yt skill install --target claude --scope project` | В `./.claude/skills/yt/SKILL.md` (явный target → prompt не запускается) |
 | `yt skill install --target gemini` | Только Gemini (`~/.gemini/skills/yt/SKILL.md`) |
 | `yt skill install --target cursor` | Только Cursor (`~/.cursor/rules/yt.mdc`) |
 | `yt skill install --target copilot --scope project` | Только Copilot (`<projectDir>/.github/instructions/yt.instructions.md`) |
@@ -28,6 +29,14 @@
 | `yt skill check --reset-prompt-state` | Сбросить «больше не спрашивать» |
 | `yt skill uninstall` | Удалить |
 | `yt skill show --target claude\|codex\|gemini\|cursor\|copilot` | Напечатать содержимое (как было бы записано) |
+
+Интерактивный режим `yt skill install` активируется когда:
+
+- stdout/stdin не перенаправлены (TTY),
+- НЕ передан `--target` или `--scope`,
+- НЕ передан `--no-prompt`.
+
+Иначе используется default flow (`--target all --scope global`, или то что передано в флагах).
 
 Auto-check срабатывает при каждом вызове `yt <команда>` (skip для `skill *`, `--version`, `--help`, `--no-skill-check`, `YT_SKILL_CHECK=0`). State хранится в `~/.cache/yandex-tracker/skill-prompt-state.json`.
 

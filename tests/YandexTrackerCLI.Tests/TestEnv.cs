@@ -174,6 +174,8 @@ internal sealed class TestEnv : IDisposable
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestBrowserLauncher.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestTokenReader.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestFederatedHttpClient.Value = null;
+        YandexTrackerCLI.Skill.SkillInstallPrompt.TestOverride.Value = null;
+        YandexTrackerCLI.Skill.SkillInstallCommandHelpers.TestForceInteractive.Value = null;
 
         try
         {

@@ -1,5 +1,7 @@
 namespace YandexTrackerCLI.Skill;
 
+using YandexTrackerCLI.Core;
+
 /// <summary>
 /// Резолвер путей до файлов skill'а в Claude / Codex / Gemini / Cursor / Copilot
 /// для каждой комбинации <see cref="SkillTarget"/> × <see cref="SkillScope"/>.
@@ -25,7 +27,7 @@ public static class SkillPaths
     /// и <paramref name="scope"/> = <see cref="SkillScope.Global"/> (Copilot не поддерживает global-scope).</exception>
     public static string Resolve(SkillTarget target, SkillScope scope, string? projectDir)
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = PathResolver.ResolveHome();
 
         // Copilot — единственный target без global-scope.
         if (target == SkillTarget.Copilot)
@@ -65,7 +67,7 @@ public static class SkillPaths
     /// <returns>Абсолютный путь до файла <c>skill-prompt-state.json</c>.</returns>
     public static string PromptStateFile()
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = PathResolver.ResolveHome();
         var xdgCache = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
         var baseDir = !string.IsNullOrEmpty(xdgCache)
             ? xdgCache

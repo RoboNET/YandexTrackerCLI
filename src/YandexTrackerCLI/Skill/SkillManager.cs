@@ -141,6 +141,9 @@ public static class SkillManager
                 ErrorCode.InvalidArgs,
                 $"file exists, use --force to overwrite: {path}");
         }
+        // Идемпотентно гарантируем все промежуточные каталоги (Claude/Codex/Gemini/Cursor/Copilot).
+        // Без этого на чистом Windows-runner'е получается DirectoryNotFoundException, т.к. в test-env
+        // создан только home/, но не home/.<agent>/skills/yt/.
         EnsureParent(path);
         File.WriteAllText(path, BuildContent(target));
         TrySetPosixMode(path, 0b110_100_100); // 0644
@@ -277,7 +280,15 @@ public static class SkillManager
         return new Installation(target, scope, path, ver);
     }
 
-    private static void EnsureParent(string filePath)
+    /// <summary>
+    /// Гарантирует существование parent-каталога для <paramref name="filePath"/>. Public,
+    /// чтобы вызывать из тестов и других call-site'ов (см. <see cref="SkillAutoCheck"/>) и не
+    /// дублировать boilerplate <c>Directory.CreateDirectory(Path.GetDirectoryName(...)!)</c>,
+    /// который ранее не вызывался для свежесозданного temp-окружения на Windows.
+    /// Идемпотентно: повторные вызовы с уже существующим каталогом — no-op.
+    /// </summary>
+    /// <param name="filePath">Полный путь до файла (parent которого должен существовать).</param>
+    public static void EnsureParent(string filePath)
     {
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir))

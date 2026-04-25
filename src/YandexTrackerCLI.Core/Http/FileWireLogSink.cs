@@ -136,13 +136,13 @@ public sealed class FileWireLogSink : IWireLogSink
     {
         if (path.Length >= 2 && path[0] == '~' && (path[1] == '/' || path[1] == Path.DirectorySeparatorChar))
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var home = PathResolver.ResolveHome();
             return Path.Combine(home, path[2..]);
         }
 
         if (path == "~")
         {
-            return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return PathResolver.ResolveHome();
         }
 
         return path;

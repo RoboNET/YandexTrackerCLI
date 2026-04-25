@@ -468,8 +468,9 @@ yt --log-raw --log-file ~/yt-raw.log auth login --type federated ...
 `yt` ставит skill в пять разных AI-ассистентов одной командой — [Claude Code](https://docs.anthropic.com/en/docs/claude-code/skills), [OpenAI Codex](https://developers.openai.com/codex/skills), Gemini CLI, Cursor IDE и GitHub Copilot:
 
 ```bash
-yt skill install                        # глобально: Claude + Codex + Gemini + Cursor (4 target'а; Copilot global → skipped)
-yt skill install --target claude        # только Claude
+yt skill install                        # TTY → интерактивный prompt (выбор ассистентов + scope + подтверждение)
+yt skill install --no-prompt            # CI/script: ставит во все 5 (Claude+Codex+Gemini+Cursor; Copilot global → skipped)
+yt skill install --target claude        # только Claude (явный target — prompt не запускается)
 yt skill install --target codex         # только Codex
 yt skill install --target gemini        # только Gemini
 yt skill install --target cursor        # только Cursor
@@ -484,6 +485,10 @@ yt skill check --reset-prompt-state     # сбросить «больше не �
 yt skill uninstall                      # удалить
 yt skill show --target claude           # напечатать что было бы записано (claude/codex/gemini/cursor/copilot)
 ```
+
+**Интерактивный режим `yt skill install`.** Если вы запускаете `yt skill install` в обычном терминале без флагов, CLI спросит куда устанавливать skill: предложит чек-лист ассистентов (помечает [✓] те, у кого обнаружен базовый каталог `~/.claude/`, `~/.gemini/`, …), затем спросит scope (global / project) и подтвердит перезапись существующих файлов.
+
+В non-TTY (pipe/CI) или при передаче `--no-prompt` / явных `--target` / `--scope` интерактив отключается и используется тот же default-flow что и раньше (`--target all --scope global`).
 
 | Target  | Scope   | Путь                                                          | Формат файла |
 | ------- | ------- | ------------------------------------------------------------- | ------------ |

@@ -39,7 +39,7 @@ public sealed class TokenCache
     public static string DefaultPath =>
         Path.Combine(
             Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
-                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"),
+                ?? Path.Combine(PathResolver.ResolveHome(), ".cache"),
             "yandex-tracker",
             "iam-tokens.json");
 

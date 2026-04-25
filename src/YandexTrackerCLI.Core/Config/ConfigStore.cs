@@ -29,7 +29,7 @@ public sealed class ConfigStore
         Environment.GetEnvironmentVariable("YT_CONFIG_PATH")
         ?? Path.Combine(
             Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
-                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config"),
+                ?? Path.Combine(PathResolver.ResolveHome(), ".config"),
             "yandex-tracker",
             "config.json");
 
