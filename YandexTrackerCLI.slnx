@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/YandexTrackerCLI.Core/YandexTrackerCLI.Core.csproj" />
+    <Project Path="src/YandexTrackerCLI/YandexTrackerCLI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/YandexTrackerCLI.Core.Tests/YandexTrackerCLI.Core.Tests.csproj" />
+    <Project Path="tests\YandexTrackerCLI.Tests\YandexTrackerCLI.Tests.csproj" />
+  </Folder>
+</Solution>
