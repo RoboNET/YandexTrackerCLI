@@ -10,14 +10,30 @@ public static class EnvOverrides
         IReadOnlyDictionary<string, string?> env,
         bool cliReadOnly = false)
     {
-        var name = profileName
-                   ?? env.GetValueOrDefault("YT_PROFILE")
-                   ?? config.DefaultProfile;
+        var explicitProfile = profileName ?? env.GetValueOrDefault("YT_PROFILE");
+        var name = explicitProfile ?? config.DefaultProfile;
 
         Profile? baseProfile = null;
-        if (config.Profiles.TryGetValue(name, out var p))
+        if (!string.IsNullOrEmpty(name) && config.Profiles.TryGetValue(name, out var p))
         {
             baseProfile = p;
+        }
+        else if (explicitProfile is null && config.Profiles.Count == 1)
+        {
+            // Auto-default: no explicit selection and no valid default_profile,
+            // but exactly one profile is configured — use it.
+            var only = config.Profiles.First();
+            name = only.Key;
+            baseProfile = only.Value;
+        }
+        else if (explicitProfile is null && config.Profiles.Count > 1)
+        {
+            // Ambiguous: multiple profiles configured but no default selected and
+            // no valid default_profile. Force the user to choose explicitly.
+            throw new TrackerException(ErrorCode.ConfigError,
+                "No default profile selected and multiple profiles are configured " +
+                $"({string.Join(", ", config.Profiles.Keys)}). " +
+                "Run `yt config profile <name>` to set a default, or pass `--profile <name>`.");
         }
 
         var saId = Trimmed(env, "YT_SERVICE_ACCOUNT_ID");

@@ -145,4 +145,105 @@ public sealed class EnvOverridesTests
         await Assert.That(eff.Auth.Token).IsEqualTo("file-token");
         await Assert.That(eff.OrgId).IsEqualTo("org-from-file");
     }
+
+    [Test]
+    public async Task Resolve_NoExplicitProfile_NoDefault_OneProfile_UsesThatProfile()
+    {
+        // default_profile points to a non-existent name (e.g. the auto-created "default"),
+        // but exactly one real profile is configured — auto-detect it.
+        var fed = new Profile(OrgType.Cloud, "fed-org", false,
+            new AuthConfig(AuthType.OAuth, Token: "fed-token"));
+        var cfg = new ConfigFile("default", new Dictionary<string, Profile>
+        {
+            ["fed"] = fed,
+        });
+
+        var eff = EnvOverrides.Resolve(cfg, profileName: null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.Name).IsEqualTo("fed");
+        await Assert.That(eff.Auth.Token).IsEqualTo("fed-token");
+        await Assert.That(eff.OrgId).IsEqualTo("fed-org");
+    }
+
+    [Test]
+    public async Task Resolve_NoExplicitProfile_NoDefault_MultipleProfiles_Throws()
+    {
+        var oauth = new AuthConfig(AuthType.OAuth, Token: "tok");
+        var cfg = new ConfigFile("default", new Dictionary<string, Profile>
+        {
+            ["fed"]  = new Profile(OrgType.Cloud, "o1", false, oauth),
+            ["work"] = new Profile(OrgType.Cloud, "o2", false, oauth),
+        });
+
+        var ex = Assert.Throws<TrackerException>(
+            () => EnvOverrides.Resolve(cfg, profileName: null, new Dictionary<string, string?>()));
+        await Assert.That(ex.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("multiple profiles");
+        await Assert.That(ex.Message).Contains("fed");
+        await Assert.That(ex.Message).Contains("work");
+        await Assert.That(ex.Message).Contains("yt config profile");
+    }
+
+    [Test]
+    public async Task Resolve_NoExplicitProfile_NoDefault_NoProfiles_Throws()
+    {
+        // Empty config + no env auth → existing error path is preserved.
+        var ex = Assert.Throws<TrackerException>(
+            () => EnvOverrides.Resolve(EmptyCfg(), profileName: null, new Dictionary<string, string?>()));
+        await Assert.That(ex.Code).IsEqualTo(ErrorCode.ConfigError);
+    }
+
+    [Test]
+    public async Task Resolve_DefaultPointsToMissing_OneRemaining_UsesIt()
+    {
+        // default_profile=old (deleted), only "fed" remains → graceful recovery.
+        var fed = new Profile(OrgType.Cloud, "fed-org", false,
+            new AuthConfig(AuthType.OAuth, Token: "fed-token"));
+        var cfg = new ConfigFile("old", new Dictionary<string, Profile>
+        {
+            ["fed"] = fed,
+        });
+
+        var eff = EnvOverrides.Resolve(cfg, profileName: null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.Name).IsEqualTo("fed");
+        await Assert.That(eff.Auth.Token).IsEqualTo("fed-token");
+    }
+
+    [Test]
+    public async Task Resolve_DefaultPointsToMissing_MultipleRemaining_Throws()
+    {
+        var oauth = new AuthConfig(AuthType.OAuth, Token: "tok");
+        var cfg = new ConfigFile("old", new Dictionary<string, Profile>
+        {
+            ["fed"]  = new Profile(OrgType.Cloud, "o1", false, oauth),
+            ["work"] = new Profile(OrgType.Cloud, "o2", false, oauth),
+        });
+
+        var ex = Assert.Throws<TrackerException>(
+            () => EnvOverrides.Resolve(cfg, profileName: null, new Dictionary<string, string?>()));
+        await Assert.That(ex.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("multiple profiles");
+    }
+
+    [Test]
+    public async Task Resolve_ExplicitProfile_StillRespected()
+    {
+        // Explicit --profile fed should win even when other profiles exist.
+        var fed = new Profile(OrgType.Cloud, "fed-org", false,
+            new AuthConfig(AuthType.OAuth, Token: "fed-token"));
+        var work = new Profile(OrgType.Yandex360, "work-org", false,
+            new AuthConfig(AuthType.OAuth, Token: "work-token"));
+        var cfg = new ConfigFile("work", new Dictionary<string, Profile>
+        {
+            ["fed"]  = fed,
+            ["work"] = work,
+        });
+
+        var eff = EnvOverrides.Resolve(cfg, profileName: "fed", new Dictionary<string, string?>());
+
+        await Assert.That(eff.Name).IsEqualTo("fed");
+        await Assert.That(eff.Auth.Token).IsEqualTo("fed-token");
+        await Assert.That(eff.OrgId).IsEqualTo("fed-org");
+    }
 }

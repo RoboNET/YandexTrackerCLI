@@ -47,7 +47,6 @@ dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
 | OS | RID |
 |---|---|
 | macOS Apple Silicon | `osx-arm64` |
-| macOS Intel | `osx-x64` |
 | Linux x86_64 | `linux-x64` |
 | Linux ARM64 | `linux-arm64` |
 | Windows | `win-x64` |
