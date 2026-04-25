@@ -32,7 +32,43 @@
 
 ## Установка
 
-### Из исходников (требуется .NET 10 SDK 10.0.201+)
+### Готовый бинарь (рекомендуется)
+
+Скачайте архив для своей платформы со страницы [Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest):
+
+| Платформа | Архив |
+|---|---|
+| Linux x86_64 | `yt-linux-x64.tar.gz` |
+| Linux ARM64 | `yt-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `yt-osx-arm64.tar.gz` |
+| Windows x86_64 | `yt-win-x64.zip` |
+
+Также прилагается файл `SHA256SUMS` — для проверки целостности.
+
+```bash
+# macOS Apple Silicon (пример)
+RID=osx-arm64
+VERSION=v0.1.1
+curl -L -o yt.tar.gz \
+  "https://github.com/RoboNET/YandexTrackerCLI/releases/download/${VERSION}/yt-${RID}.tar.gz"
+tar -xzf yt.tar.gz
+sudo mv yt /usr/local/bin/yt
+yt --version
+```
+
+На macOS перед первым запуском возможно потребуется снять `quarantine`:
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/yt
+```
+
+На Windows распакуйте `yt.exe` из zip и положите в любую папку из `PATH`.
+
+Размер бинаря в архиве — около 3–4 МБ (распакованный — 7–8 МБ).
+
+### Из исходников
+
+Если хочется собрать самому или нужна последняя dev-версия:
 
 ```bash
 git clone https://github.com/RoboNET/YandexTrackerCLI.git
@@ -42,23 +78,7 @@ dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
 ./dist/yt --help
 ```
 
-Замените `osx-arm64` на нужный RID:
-
-| OS | RID |
-|---|---|
-| macOS Apple Silicon | `osx-arm64` |
-| Linux x86_64 | `linux-x64` |
-| Linux ARM64 | `linux-arm64` |
-| Windows | `win-x64` |
-
-Размер бинаря — около 7–8 МБ.
-
-### Положить в PATH
-
-```bash
-sudo mv ./dist/yt /usr/local/bin/yt
-yt --version
-```
+Поддерживаемые RID: `osx-arm64`, `linux-x64`, `linux-arm64`, `win-x64`. Требуется .NET 10 SDK 10.0.201+.
 
 ## Быстрый старт
 
