@@ -64,17 +64,22 @@ public sealed class SkillUninstallCommandTests
     }
 
     [Test]
-    public async Task SkillUninstall_All_RemovesBoth()
+    public async Task SkillUninstall_All_RemovesAllInstalled()
     {
         using var env = new TestEnv();
         var sw = new StringWriter();
         var er = new StringWriter();
 
+        // `skill install` ставит 4 global'а: claude, codex, gemini, cursor.
         await env.Invoke(new[] { "skill", "install" }, sw, er);
         var claude = Path.Combine(env.Root, "home", ".claude", "skills", "yt", "SKILL.md");
         var codex = Path.Combine(env.Root, "home", ".agents", "skills", "yt", "SKILL.md");
+        var gemini = Path.Combine(env.Root, "home", ".gemini", "skills", "yt", "SKILL.md");
+        var cursor = Path.Combine(env.Root, "home", ".cursor", "rules", "yt.mdc");
         await Assert.That(File.Exists(claude)).IsTrue();
         await Assert.That(File.Exists(codex)).IsTrue();
+        await Assert.That(File.Exists(gemini)).IsTrue();
+        await Assert.That(File.Exists(cursor)).IsTrue();
 
         sw = new StringWriter();
         er = new StringWriter();
@@ -82,5 +87,10 @@ public sealed class SkillUninstallCommandTests
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(File.Exists(claude)).IsFalse();
         await Assert.That(File.Exists(codex)).IsFalse();
+        await Assert.That(File.Exists(gemini)).IsFalse();
+        await Assert.That(File.Exists(cursor)).IsFalse();
+
+        using var doc = JsonDocument.Parse(sw.ToString());
+        await Assert.That(doc.RootElement.GetProperty("uninstalled").GetArrayLength()).IsEqualTo(4);
     }
 }

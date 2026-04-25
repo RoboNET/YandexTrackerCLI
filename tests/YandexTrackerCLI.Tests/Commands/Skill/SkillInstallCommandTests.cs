@@ -161,18 +161,60 @@ public sealed class SkillInstallCommandTests
     }
 
     [Test]
-    public async Task SkillInstall_All_InstallsBoth()
+    public async Task SkillInstall_AllGlobal_InstallsFour_SkipsCopilot()
     {
         using var env = new TestEnv();
         var sw = new StringWriter();
         var er = new StringWriter();
 
+        // `skill install` (default --target all --scope global) — 5 target'ов × 1 scope.
+        // Copilot global → skipped (не error), остальные 4 устанавливаются.
         var exit = await env.Invoke(new[] { "skill", "install" }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
 
         var claude = Path.Combine(env.Root, "home", ".claude", "skills", "yt", "SKILL.md");
         var codex = Path.Combine(env.Root, "home", ".agents", "skills", "yt", "SKILL.md");
+        var gemini = Path.Combine(env.Root, "home", ".gemini", "skills", "yt", "SKILL.md");
+        var cursor = Path.Combine(env.Root, "home", ".cursor", "rules", "yt.mdc");
         await Assert.That(File.Exists(claude)).IsTrue();
         await Assert.That(File.Exists(codex)).IsTrue();
+        await Assert.That(File.Exists(gemini)).IsTrue();
+        await Assert.That(File.Exists(cursor)).IsTrue();
+
+        using var doc = JsonDocument.Parse(sw.ToString());
+        var installed = doc.RootElement.GetProperty("installed").EnumerateArray().ToArray();
+        await Assert.That(installed.Length).IsEqualTo(4);
+
+        var skipped = doc.RootElement.GetProperty("skipped").EnumerateArray().ToArray();
+        await Assert.That(skipped.Length).IsEqualTo(1);
+        await Assert.That(skipped[0].GetProperty("target").GetString()).IsEqualTo("copilot");
+        await Assert.That(skipped[0].GetProperty("scope").GetString()).IsEqualTo("global");
+        await Assert.That(skipped[0].GetProperty("skipped").GetBoolean()).IsTrue();
+    }
+
+    [Test]
+    public async Task SkillInstall_AllProject_InstallsFive()
+    {
+        using var env = new TestEnv();
+        var projectDir = Path.Combine(env.Root, "proj");
+        Directory.CreateDirectory(projectDir);
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[] { "skill", "install", "--scope", "project", "--project-dir", projectDir },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+
+        await Assert.That(File.Exists(Path.Combine(projectDir, ".claude", "skills", "yt", "SKILL.md"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(projectDir, ".agents", "skills", "yt", "SKILL.md"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(projectDir, ".gemini", "skills", "yt", "SKILL.md"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(projectDir, ".cursor", "rules", "yt.mdc"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(projectDir, ".github", "instructions", "yt.instructions.md"))).IsTrue();
+
+        using var doc = JsonDocument.Parse(sw.ToString());
+        var installed = doc.RootElement.GetProperty("installed").EnumerateArray().ToArray();
+        await Assert.That(installed.Length).IsEqualTo(5);
+        await Assert.That(doc.RootElement.GetProperty("skipped").GetArrayLength()).IsEqualTo(0);
     }
 }

@@ -10,7 +10,15 @@ using YandexTrackerCLI.Skill;
 /// </summary>
 internal static class SkillJsonFormatter
 {
-    public static JsonDocument FormatInstall(IEnumerable<SkillManager.InstallResult> installed)
+    /// <summary>
+    /// Форматирует ответ команды <c>install</c>.
+    /// </summary>
+    /// <param name="installed">Успешно установленные локации.</param>
+    /// <param name="skipped">Локации, которые были пропущены из-за неподдерживаемой комбинации
+    /// (например, Copilot+Global).</param>
+    public static JsonDocument FormatInstall(
+        IEnumerable<SkillManager.InstallResult> installed,
+        IEnumerable<SkillManager.SkippedInstall> skipped)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -20,6 +28,17 @@ internal static class SkillJsonFormatter
             foreach (var i in installed)
             {
                 WriteInstallResult(w, i);
+            }
+            w.WriteEndArray();
+            w.WriteStartArray("skipped");
+            foreach (var s in skipped)
+            {
+                w.WriteStartObject();
+                w.WriteString("target", s.Target.ToString().ToLowerInvariant());
+                w.WriteString("scope", s.Scope.ToString().ToLowerInvariant());
+                w.WriteBoolean("skipped", true);
+                w.WriteString("reason", s.Reason);
+                w.WriteEndObject();
             }
             w.WriteEndArray();
             w.WriteEndObject();
@@ -76,6 +95,22 @@ internal static class SkillJsonFormatter
             w.WriteStartObject("codex");
             WriteSlot(w, "global", status.CodexGlobal, status.CurrentVersion);
             WriteSlot(w, "project", status.CodexProject, status.CurrentVersion);
+            w.WriteEndObject();
+
+            w.WriteStartObject("gemini");
+            WriteSlot(w, "global", status.GeminiGlobal, status.CurrentVersion);
+            WriteSlot(w, "project", status.GeminiProject, status.CurrentVersion);
+            w.WriteEndObject();
+
+            w.WriteStartObject("cursor");
+            WriteSlot(w, "global", status.CursorGlobal, status.CurrentVersion);
+            WriteSlot(w, "project", status.CursorProject, status.CurrentVersion);
+            w.WriteEndObject();
+
+            // Copilot не имеет global-варианта — global-слот всегда null.
+            w.WriteStartObject("copilot");
+            w.WriteNull("global");
+            WriteSlot(w, "project", status.CopilotProject, status.CurrentVersion);
             w.WriteEndObject();
 
             w.WriteBoolean("any_outdated", status.AnyOutdated);

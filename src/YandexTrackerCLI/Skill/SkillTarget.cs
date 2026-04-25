@@ -8,8 +8,18 @@ public enum SkillTarget
     /// <summary>Claude Code (skill в директории <c>~/.claude/skills/yt/SKILL.md</c>).</summary>
     Claude,
 
-    /// <summary>OpenAI Codex (markdown-секция в <c>~/.codex/AGENTS.md</c>).</summary>
+    /// <summary>OpenAI Codex (skill в <c>~/.agents/skills/yt/SKILL.md</c>).</summary>
     Codex,
+
+    /// <summary>Gemini CLI (skill в <c>~/.gemini/skills/yt/SKILL.md</c>).</summary>
+    Gemini,
+
+    /// <summary>Cursor IDE (rule в <c>~/.cursor/rules/yt.mdc</c>).</summary>
+    Cursor,
+
+    /// <summary>GitHub Copilot (instructions в <c>&lt;projectDir&gt;/.github/instructions/yt.instructions.md</c>).
+    /// Поддерживает только project-scope.</summary>
+    Copilot,
 }
 
 /// <summary>

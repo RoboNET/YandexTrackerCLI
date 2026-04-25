@@ -465,13 +465,16 @@ yt --log-raw --log-file ~/yt-raw.log auth login --type federated ...
 
 ## AI-ассистенты
 
-`yt` ставит [skill](https://docs.anthropic.com/en/docs/claude-code/skills) для Claude Code и [Codex skill](https://developers.openai.com/codex/skills) одной командой:
+`yt` ставит skill в пять разных AI-ассистентов одной командой — [Claude Code](https://docs.anthropic.com/en/docs/claude-code/skills), [OpenAI Codex](https://developers.openai.com/codex/skills), Gemini CLI, Cursor IDE и GitHub Copilot:
 
 ```bash
-yt skill install                        # глобально, для Claude и Codex
+yt skill install                        # глобально: Claude + Codex + Gemini + Cursor (4 target'а; Copilot global → skipped)
 yt skill install --target claude        # только Claude
 yt skill install --target codex         # только Codex
-yt skill install --scope project        # в текущий проект (./.claude/, ./.agents/)
+yt skill install --target gemini        # только Gemini
+yt skill install --target cursor        # только Cursor
+yt skill install --target copilot --scope project --project-dir .  # Copilot — только project-scope
+yt skill install --scope project        # все 5 target'ов в текущий проект
 yt skill install --scope project --project-dir /path/to/repo
 yt skill status                         # что установлено + какая версия + up_to_date
 yt skill update                         # перезаписать установленные локации актуальной версией CLI
@@ -479,15 +482,23 @@ yt skill check                          # ручная проверка уста
 yt skill check --no-prompt              # только статус, без интерактива
 yt skill check --reset-prompt-state     # сбросить «больше не спрашивать»
 yt skill uninstall                      # удалить
-yt skill show --target claude           # напечатать что было бы записано
+yt skill show --target claude           # напечатать что было бы записано (claude/codex/gemini/cursor/copilot)
 ```
 
-| Target | Scope   | Путь                                       |
-| ------ | ------- | ------------------------------------------ |
-| Claude | Global  | `~/.claude/skills/yt/SKILL.md`             |
-| Claude | Project | `<projectDir>/.claude/skills/yt/SKILL.md`  |
-| Codex  | Global  | `~/.agents/skills/yt/SKILL.md`             |
-| Codex  | Project | `<projectDir>/.agents/skills/yt/SKILL.md`  |
+| Target  | Scope   | Путь                                                          | Формат файла |
+| ------- | ------- | ------------------------------------------------------------- | ------------ |
+| Claude  | Global  | `~/.claude/skills/yt/SKILL.md`                                | SKILL.md as-is |
+| Claude  | Project | `<projectDir>/.claude/skills/yt/SKILL.md`                     | SKILL.md as-is |
+| Codex   | Global  | `~/.agents/skills/yt/SKILL.md`                                | SKILL.md as-is |
+| Codex   | Project | `<projectDir>/.agents/skills/yt/SKILL.md`                     | SKILL.md as-is |
+| Gemini  | Global  | `~/.gemini/skills/yt/SKILL.md`                                | SKILL.md as-is |
+| Gemini  | Project | `<projectDir>/.gemini/skills/yt/SKILL.md`                     | SKILL.md as-is |
+| Cursor  | Global  | `~/.cursor/rules/yt.mdc`                                      | translated `.mdc` (`description` / `globs` / `alwaysApply`) |
+| Cursor  | Project | `<projectDir>/.cursor/rules/yt.mdc`                           | translated `.mdc` |
+| Copilot | Global  | **не поддерживается** — `--target all --scope global` тихо пропускает | — |
+| Copilot | Project | `<projectDir>/.github/instructions/yt.instructions.md`        | translated `.instructions.md` (`applyTo: "**"`) |
+
+Claude / Codex / Gemini получают полный SKILL.md (с YAML frontmatter `name: yt`). Cursor и Copilot получают переписанный frontmatter под их форматы — body skill'а одинаковое, версия одинаковая. Маркер `<!-- yt-version: X.Y.Z -->` сохраняется во всех вариантах для определения актуальности.
 
 Skill содержит шпаргалку команд, exit-коды, паттерны парсинга JSON, правила безопасности (read-only, подтверждение перед mutating). После установки AI-ассистент знает как пользоваться `yt` без подсказок пользователя.
 

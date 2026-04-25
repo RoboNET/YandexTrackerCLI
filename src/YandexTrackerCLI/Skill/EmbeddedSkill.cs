@@ -16,9 +16,15 @@ public static class EmbeddedSkill
     public const string ResourceName = "yt.skill.md";
 
     /// <summary>
+    /// Fallback-описание skill'а, если в embedded SKILL.md по какой-то причине нет
+    /// frontmatter-поля <c>description</c>.
+    /// </summary>
+    public const string DefaultDescription = "Yandex Tracker CLI skill";
+
+    /// <summary>
     /// Шаблон для маркера версии SKILL.md (<c>&lt;!-- yt-version: X.Y.Z --&gt;</c>),
     /// который используется для определения версии установленного skill'а
-    /// (как для Claude, так и для Codex — у обоих single-file SKILL.md).
+    /// (универсально для всех target'ов — у всех вариантов файла этот маркер присутствует).
     /// </summary>
     private static readonly Regex VersionMarkerRegex =
         new(@"<!--\s*yt-version:\s*([^\s>]+)\s*-->", RegexOptions.Compiled);
@@ -97,6 +103,108 @@ public static class EmbeddedSkill
         var v = m.Groups[1].Value;
         // Unresolved placeholder — probe рабочей копии репозитория, не реальной установки.
         return v == "{VERSION}" ? null : v;
+    }
+
+    /// <summary>
+    /// Возвращает значение поля <c>description</c> из YAML frontmatter embedded SKILL.md.
+    /// Если frontmatter отсутствует или поле не найдено — возвращает <see cref="DefaultDescription"/>.
+    /// Используется для генерации Cursor <c>.mdc</c> и Copilot <c>.instructions.md</c>.
+    /// </summary>
+    /// <returns>Описание (одна строка).</returns>
+    public static string GetDescription()
+    {
+        var content = ReadAll();
+        var fm = ParseFrontmatter(content);
+        return fm.TryGetValue("description", out var desc) && !string.IsNullOrWhiteSpace(desc)
+            ? desc
+            : DefaultDescription;
+    }
+
+    /// <summary>
+    /// Возвращает фрагмент embedded SKILL.md, идущий после маркера <c>&lt;!-- yt-version: ... --&gt;</c>,
+    /// с очищенными ведущими пустыми строками. Используется для перепаковки контента
+    /// под Cursor (<c>.mdc</c>) и Copilot (<c>.instructions.md</c>) с другим frontmatter.
+    /// </summary>
+    /// <returns>Тело skill'а после version-маркера.</returns>
+    public static string GetBodyAfterVersionMarker()
+    {
+        var content = ReadAll();
+        var m = VersionMarkerRegex.Match(content);
+        if (!m.Success)
+        {
+            // Маркера нет — fallback на body после frontmatter.
+            return StripFrontmatter(content);
+        }
+
+        var afterMarker = m.Index + m.Length;
+        // Сдвигаем за перевод строки маркера, если он есть.
+        if (afterMarker < content.Length && content[afterMarker] == '\r')
+        {
+            afterMarker++;
+        }
+        if (afterMarker < content.Length && content[afterMarker] == '\n')
+        {
+            afterMarker++;
+        }
+        // Убираем ведущие пустые строки.
+        while (afterMarker < content.Length && (content[afterMarker] == '\n' || content[afterMarker] == '\r'))
+        {
+            afterMarker++;
+        }
+        return content[afterMarker..];
+    }
+
+    /// <summary>
+    /// Парсит YAML frontmatter (между первой и второй строкой <c>---</c>) в простой
+    /// словарь <c>key: value</c>. Поддерживает только однострочные значения; сложный YAML
+    /// (вложенные структуры, multiline strings, lists) не нужен — frontmatter SKILL.md
+    /// тривиален: <c>name</c>, <c>description</c>.
+    /// </summary>
+    /// <param name="content">Полное содержимое markdown-файла.</param>
+    /// <returns>Словарь полей frontmatter; пустой, если frontmatter отсутствует.</returns>
+    private static Dictionary<string, string> ParseFrontmatter(string content)
+    {
+        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!content.StartsWith("---", StringComparison.Ordinal))
+        {
+            return dict;
+        }
+
+        var afterFirst = content.IndexOf('\n');
+        if (afterFirst < 0)
+        {
+            return dict;
+        }
+
+        var searchFrom = afterFirst + 1;
+        while (searchFrom < content.Length)
+        {
+            var nextNl = content.IndexOf('\n', searchFrom);
+            var line = nextNl < 0 ? content[searchFrom..] : content[searchFrom..nextNl];
+            var trimmed = line.TrimEnd('\r');
+            if (trimmed == "---")
+            {
+                return dict;
+            }
+
+            var colon = trimmed.IndexOf(':');
+            if (colon > 0)
+            {
+                var key = trimmed[..colon].Trim();
+                var value = trimmed[(colon + 1)..].Trim();
+                if (!string.IsNullOrEmpty(key))
+                {
+                    dict[key] = value;
+                }
+            }
+
+            if (nextNl < 0)
+            {
+                break;
+            }
+            searchFrom = nextNl + 1;
+        }
+        return dict;
     }
 
     /// <summary>

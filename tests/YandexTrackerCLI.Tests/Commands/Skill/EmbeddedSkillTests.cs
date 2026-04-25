@@ -35,6 +35,28 @@ public sealed class EmbeddedSkillTests
     }
 
     [Test]
+    public async Task GetDescription_NotEmptyAndNotDefault()
+    {
+        // SKILL.md содержит реальный description в YAML frontmatter — должен быть извлечён.
+        var desc = EmbeddedSkill.GetDescription();
+        await Assert.That(string.IsNullOrWhiteSpace(desc)).IsFalse();
+        await Assert.That(desc).IsNotEqualTo(EmbeddedSkill.DefaultDescription);
+        // Description содержит ключевые маркеры из реального SKILL.md.
+        await Assert.That(desc).Contains("Tracker");
+    }
+
+    [Test]
+    public async Task GetBodyAfterVersionMarker_StripsMarkerAndFrontmatter()
+    {
+        var body = EmbeddedSkill.GetBodyAfterVersionMarker();
+        // В body не должно быть ни frontmatter, ни самого маркера.
+        await Assert.That(body).DoesNotContain("name: yt");
+        await Assert.That(body).DoesNotContain("<!-- yt-version:");
+        // Тело начинается с заголовка skill'а.
+        await Assert.That(body.TrimStart()).StartsWith("# yt — Yandex Tracker CLI");
+    }
+
+    [Test]
     public async Task EmbeddedResource_MatchesWorkingCopy()
     {
         // Найдём рабочую копию SKILL.md, поднимаясь от каталога с тестами к корню репо.

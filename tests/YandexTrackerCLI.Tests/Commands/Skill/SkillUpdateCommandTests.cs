@@ -84,12 +84,14 @@ public sealed class SkillUpdateCommandTests
     }
 
     [Test]
-    public async Task SkillUpdate_All_UpdatesBothOutdated()
+    public async Task SkillUpdate_All_UpdatesAllInstalledLocations()
     {
         using var env = new TestEnv();
         var sw = new StringWriter();
         var er = new StringWriter();
 
+        // `skill install` (default --target all --scope global) ставит 4 target'а:
+        // claude, codex, gemini, cursor (copilot global не поддерживается → skipped).
         await env.Invoke(new[] { "skill", "install" }, sw, er);
         StaleVersion(Path.Combine(env.Root, "home", ".claude", "skills", "yt", "SKILL.md"));
         StaleVersion(Path.Combine(env.Root, "home", ".agents", "skills", "yt", "SKILL.md"));
@@ -99,7 +101,9 @@ public sealed class SkillUpdateCommandTests
         var exit = await env.Invoke(new[] { "skill", "update" }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
 
+        // Update перезаписывает ВСЕ установленные локации — 4 (claude/codex/gemini/cursor),
+        // независимо от того, устарели они или нет (force=true внутри Update).
         using var doc = JsonDocument.Parse(sw.ToString());
-        await Assert.That(doc.RootElement.GetProperty("updated").GetArrayLength()).IsEqualTo(2);
+        await Assert.That(doc.RootElement.GetProperty("updated").GetArrayLength()).IsEqualTo(4);
     }
 }

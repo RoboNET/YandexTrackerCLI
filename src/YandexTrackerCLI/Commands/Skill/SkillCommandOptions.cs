@@ -10,19 +10,30 @@ internal static class SkillCommandOptions
 {
     public const string TargetClaude = "claude";
     public const string TargetCodex = "codex";
+    public const string TargetGemini = "gemini";
+    public const string TargetCursor = "cursor";
+    public const string TargetCopilot = "copilot";
     public const string TargetAll = "all";
 
     public const string ScopeGlobal = "global";
     public const string ScopeProject = "project";
 
-    public static Option<string> Target(string defaultValue = TargetAll, string description = "claude | codex | all (default all).") =>
+    /// <summary>Все 5 поддерживаемых target'ов в порядке: Claude → Codex → Gemini → Cursor → Copilot.</summary>
+    public static readonly SkillTarget[] AllTargets =
+        { SkillTarget.Claude, SkillTarget.Codex, SkillTarget.Gemini, SkillTarget.Cursor, SkillTarget.Copilot };
+
+    public static Option<string> Target(
+        string defaultValue = TargetAll,
+        string description = "claude | codex | gemini | cursor | copilot | all (default all).") =>
         new("--target")
         {
             Description = description,
             DefaultValueFactory = _ => defaultValue,
         };
 
-    public static Option<string> Scope(string defaultValue = ScopeGlobal, string description = "global | project (default global).") =>
+    public static Option<string> Scope(
+        string defaultValue = ScopeGlobal,
+        string description = "global | project (default global).") =>
         new("--scope")
         {
             Description = description,
@@ -42,7 +53,10 @@ internal static class SkillCommandOptions
     {
         TargetClaude => new[] { SkillTarget.Claude },
         TargetCodex => new[] { SkillTarget.Codex },
-        TargetAll => new[] { SkillTarget.Claude, SkillTarget.Codex },
+        TargetGemini => new[] { SkillTarget.Gemini },
+        TargetCursor => new[] { SkillTarget.Cursor },
+        TargetCopilot => new[] { SkillTarget.Copilot },
+        TargetAll => AllTargets,
         _ => throw new InvalidOperationException($"Unknown --target value: {raw}"),
     };
 

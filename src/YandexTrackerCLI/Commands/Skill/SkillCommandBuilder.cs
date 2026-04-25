@@ -12,7 +12,7 @@ public static class SkillCommandBuilder
     /// </summary>
     public static Command Build()
     {
-        var cmd = new Command("skill", "Управление AI-skill (Claude Code, OpenAI Codex).");
+        var cmd = new Command("skill", "Управление AI-skill (Claude / Codex / Gemini / Cursor / Copilot).");
         cmd.Subcommands.Add(SkillInstallCommand.Build());
         cmd.Subcommands.Add(SkillUninstallCommand.Build());
         cmd.Subcommands.Add(SkillStatusCommand.Build());

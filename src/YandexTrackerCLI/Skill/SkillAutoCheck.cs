@@ -203,7 +203,14 @@ public static class SkillAutoCheck
         if (answer is "" or "y" or "yes" or "д" or "да")
         {
             var results = SkillManager.Update(
-                new[] { SkillTarget.Claude, SkillTarget.Codex },
+                new[]
+                {
+                    SkillTarget.Claude,
+                    SkillTarget.Codex,
+                    SkillTarget.Gemini,
+                    SkillTarget.Cursor,
+                    SkillTarget.Copilot,
+                },
                 new[] { SkillScope.Global, SkillScope.Project },
                 projectDir);
             foreach (var r in results)
@@ -294,6 +301,11 @@ public static class SkillAutoCheck
             (SkillTarget.Claude, SkillScope.Project) => "Claude (project)",
             (SkillTarget.Codex, SkillScope.Global) => "Codex (global)",
             (SkillTarget.Codex, SkillScope.Project) => "Codex (project)",
+            (SkillTarget.Gemini, SkillScope.Global) => "Gemini (global)",
+            (SkillTarget.Gemini, SkillScope.Project) => "Gemini (project)",
+            (SkillTarget.Cursor, SkillScope.Global) => "Cursor (global)",
+            (SkillTarget.Cursor, SkillScope.Project) => "Cursor (project)",
+            (SkillTarget.Copilot, SkillScope.Project) => "Copilot (project)",
             _ => $"{t}/{s}",
         };
 }

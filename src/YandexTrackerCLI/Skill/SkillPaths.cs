@@ -1,8 +1,8 @@
 namespace YandexTrackerCLI.Skill;
 
 /// <summary>
-/// Резолвер путей до файлов skill'а в Claude и Codex для каждой комбинации
-/// <see cref="SkillTarget"/> × <see cref="SkillScope"/>.
+/// Резолвер путей до файлов skill'а в Claude / Codex / Gemini / Cursor / Copilot
+/// для каждой комбинации <see cref="SkillTarget"/> × <see cref="SkillScope"/>.
 /// </summary>
 public static class SkillPaths
 {
@@ -13,20 +13,31 @@ public static class SkillPaths
     /// <param name="scope">Зона установки.</param>
     /// <param name="projectDir">Корень проекта; используется только для <see cref="SkillScope.Project"/>.
     /// Должен быть абсолютным.</param>
-    /// <returns>Полный путь до файла (для Claude — <c>SKILL.md</c>; для Codex — <c>AGENTS.md</c>).</returns>
+    /// <returns>Полный путь до файла:
+    /// <list type="bullet">
+    ///   <item><description>Claude/Codex/Gemini — <c>SKILL.md</c> в <c>&lt;base&gt;/.&lt;agent&gt;/skills/yt/</c>.</description></item>
+    ///   <item><description>Cursor — <c>yt.mdc</c> прямо в <c>&lt;base&gt;/.cursor/rules/</c> (без подкаталога).</description></item>
+    ///   <item><description>Copilot — <c>yt.instructions.md</c> в <c>&lt;projectDir&gt;/.github/instructions/</c> (только project-scope).</description></item>
+    /// </list>
+    /// </returns>
     /// <exception cref="ArgumentException">Если <paramref name="projectDir"/> не задан для <see cref="SkillScope.Project"/>.</exception>
+    /// <exception cref="NotSupportedException">Если <paramref name="target"/> = <see cref="SkillTarget.Copilot"/>
+    /// и <paramref name="scope"/> = <see cref="SkillScope.Global"/> (Copilot не поддерживает global-scope).</exception>
     public static string Resolve(SkillTarget target, SkillScope scope, string? projectDir)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        // Claude:  <base>/.claude/skills/yt/SKILL.md
-        // Codex:   <base>/.agents/skills/yt/SKILL.md  (https://developers.openai.com/codex/skills)
-        var rootDirName = target switch
+        // Copilot — единственный target без global-scope.
+        if (target == SkillTarget.Copilot)
         {
-            SkillTarget.Claude => ".claude",
-            SkillTarget.Codex => ".agents",
-            _ => throw new ArgumentOutOfRangeException(nameof(target), target, "Unknown skill target."),
-        };
+            if (scope == SkillScope.Global)
+            {
+                throw new NotSupportedException(
+                    "Copilot does not support global scope; use --scope project.");
+            }
+            var pdir = EnsureProject(projectDir);
+            return Path.Combine(pdir, ".github", "instructions", "yt.instructions.md");
+        }
 
         var baseDir = scope switch
         {
@@ -35,7 +46,16 @@ public static class SkillPaths
             _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "Unknown skill scope."),
         };
 
-        return Path.Combine(baseDir, rootDirName, "skills", "yt", "SKILL.md");
+        return target switch
+        {
+            // Claude / Codex / Gemini — single-file SKILL.md в .<agent>/skills/yt/.
+            SkillTarget.Claude => Path.Combine(baseDir, ".claude", "skills", "yt", "SKILL.md"),
+            SkillTarget.Codex => Path.Combine(baseDir, ".agents", "skills", "yt", "SKILL.md"),
+            SkillTarget.Gemini => Path.Combine(baseDir, ".gemini", "skills", "yt", "SKILL.md"),
+            // Cursor — yt.mdc прямо в .cursor/rules/, без yt/ подкаталога.
+            SkillTarget.Cursor => Path.Combine(baseDir, ".cursor", "rules", "yt.mdc"),
+            _ => throw new ArgumentOutOfRangeException(nameof(target), target, "Unknown skill target."),
+        };
     }
 
     /// <summary>

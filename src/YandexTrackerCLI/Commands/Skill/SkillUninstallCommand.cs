@@ -19,7 +19,7 @@ public static class SkillUninstallCommand
         var scopeOpt = SkillCommandOptions.Scope();
         var projectDirOpt = SkillCommandOptions.ProjectDir();
 
-        var cmd = new Command("uninstall", "Удалить yt skill из Claude и/или Codex.");
+        var cmd = new Command("uninstall", "Удалить yt skill из Claude / Codex / Gemini / Cursor / Copilot.");
         cmd.Options.Add(targetOpt);
         cmd.Options.Add(scopeOpt);
         cmd.Options.Add(projectDirOpt);
@@ -38,14 +38,29 @@ public static class SkillUninstallCommand
                 {
                     foreach (var s in scopes)
                     {
-                        var path = SkillManager.Uninstall(t, s, projectDir);
-                        if (path is not null)
+                        // Copilot+Global — недоступная комбинация; молча пропускаем без записи
+                        // в "skipped" (в skipped попадают только установленные-но-не-найденные).
+                        string path;
+                        try
                         {
-                            uninstalled.Add((t, s, path));
+                            path = SkillPaths.Resolve(t, s, projectDir);
+                        }
+                        catch (NotSupportedException)
+                        {
+                            continue;
+                        }
+
+                        if (File.Exists(path))
+                        {
+                            var deleted = SkillManager.Uninstall(t, s, projectDir);
+                            if (deleted is not null)
+                            {
+                                uninstalled.Add((t, s, deleted));
+                            }
                         }
                         else
                         {
-                            skipped.Add((t, s, SkillPaths.Resolve(t, s, projectDir)));
+                            skipped.Add((t, s, path));
                         }
                     }
                 }

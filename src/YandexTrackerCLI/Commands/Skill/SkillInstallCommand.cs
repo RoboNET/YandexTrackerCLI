@@ -7,6 +7,8 @@ using YandexTrackerCLI.Skill;
 
 /// <summary>
 /// Команда <c>yt skill install</c>: устанавливает skill в выбранные target × scope.
+/// Для Copilot+Global возвращает <c>skipped</c>-запись (не error), т.к. Copilot
+/// не поддерживает global-scope.
 /// </summary>
 public static class SkillInstallCommand
 {
@@ -20,10 +22,10 @@ public static class SkillInstallCommand
         var projectDirOpt = SkillCommandOptions.ProjectDir();
         var forceOpt = new Option<bool>("--force")
         {
-            Description = "Перезаписать существующий Claude SKILL.md (для Codex --force не требуется).",
+            Description = "Перезаписать существующий файл skill'а.",
         };
 
-        var cmd = new Command("install", "Установить yt skill в Claude и/или Codex.");
+        var cmd = new Command("install", "Установить yt skill в Claude / Codex / Gemini / Cursor / Copilot.");
         cmd.Options.Add(targetOpt);
         cmd.Options.Add(scopeOpt);
         cmd.Options.Add(projectDirOpt);
@@ -39,15 +41,24 @@ public static class SkillInstallCommand
                 var force = parseResult.GetValue(forceOpt);
 
                 var results = new List<SkillManager.InstallResult>();
+                var skipped = new List<SkillManager.SkippedInstall>();
                 foreach (var t in targets)
                 {
                     foreach (var s in scopes)
                     {
-                        results.Add(SkillManager.Install(t, s, projectDir, force));
+                        var installed = SkillManager.TryInstall(t, s, projectDir, force, out var skip);
+                        if (installed is not null)
+                        {
+                            results.Add(installed);
+                        }
+                        else if (skip is not null)
+                        {
+                            skipped.Add(skip);
+                        }
                     }
                 }
 
-                using var doc = SkillJsonFormatter.FormatInstall(results);
+                using var doc = SkillJsonFormatter.FormatInstall(results, skipped);
                 var format = CommandFormatHelper.ResolveForCommand(parseResult);
                 JsonWriter.Write(Console.Out, doc.RootElement, format, pretty: CommandFormatHelper.ResolvePretty());
                 return Task.FromResult(0);

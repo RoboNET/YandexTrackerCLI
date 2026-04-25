@@ -17,7 +17,7 @@ public static class SkillUpdateCommand
     {
         var targetOpt = SkillCommandOptions.Target(
             defaultValue: SkillCommandOptions.TargetAll,
-            description: "claude | codex | all — какие target'ы рассматривать (default all).");
+            description: "claude | codex | gemini | cursor | copilot | all — какие target'ы рассматривать (default all).");
         var scopeOpt = SkillCommandOptions.Scope(
             defaultValue: SkillCommandOptions.TargetAll,
             description: "global | project | all — какие зоны рассматривать (default all).");
