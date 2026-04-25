@@ -3,6 +3,8 @@ name: yt
 description: Use when interacting with Yandex Tracker (Яндекс Трекер) — searching/reading issues, comments, worklogs, attachments, checklists, links, boards, sprints, projects. Triggers on words like "Яндекс Трекер", "Tracker", "ишью", "задача в трекере", issue keys like "TECH-1234", or URLs like tracker.yandex.ru/MAN-123. Use yt CLI for both reading and mutating operations; pass --read-only or YT_READ_ONLY=1 for safe browsing.
 ---
 
+<!-- yt-version: {VERSION} -->
+
 # yt — Yandex Tracker CLI
 
 `yt` — это NativeAOT CLI для Яндекс Трекера. Один бинарь, JSON-вывод по умолчанию (auto-detect: TTY → table, pipe → json), стабильные exit-коды. Используй его для любых задач связанных с Tracker'ом.

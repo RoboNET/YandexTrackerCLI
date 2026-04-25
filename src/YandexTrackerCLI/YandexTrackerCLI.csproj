@@ -15,4 +15,7 @@
   <ItemGroup>
     <PackageReference Include="System.CommandLine" Version="2.0.7" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\.claude\skills\yt\SKILL.md" LogicalName="yt.skill.md" />
+  </ItemGroup>
 </Project>

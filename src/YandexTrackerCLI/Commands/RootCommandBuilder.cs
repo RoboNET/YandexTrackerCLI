@@ -98,6 +98,17 @@ public static class RootCommandBuilder
         };
 
     /// <summary>
+    /// Глобальная опция <c>--no-skill-check</c> — отключить авто-проверку устаревшего
+    /// AI-skill (Claude/Codex) для одного вызова. Альтернатива env <c>YT_SKILL_CHECK=0</c>.
+    /// </summary>
+    public static readonly Option<bool> NoSkillCheckOption =
+        new("--no-skill-check")
+        {
+            Description = "Отключить авто-проверку устаревшего AI-skill (Claude/Codex).",
+            Recursive = true,
+        };
+
+    /// <summary>
     /// Собирает корневую команду с зарегистрированными глобальными опциями.
     /// </summary>
     /// <returns>Сконфигурированная <see cref="RootCommand"/>.</returns>
@@ -112,6 +123,7 @@ public static class RootCommandBuilder
         root.Options.Add(NoPagerOption);
         root.Options.Add(LogFileOption);
         root.Options.Add(LogRawOption);
+        root.Options.Add(NoSkillCheckOption);
 
         var auth = new Command("auth", "Управление аутентификацией.");
         auth.Subcommands.Add(Auth.AuthStatusCommand.Build());
@@ -145,6 +157,7 @@ public static class RootCommandBuilder
         root.Subcommands.Add(Version.VersionCommandBuilder.Build());
         root.Subcommands.Add(Field.FieldCommandBuilder.Build());
         root.Subcommands.Add(Ref.RefCommandBuilder.Build());
+        root.Subcommands.Add(Skill.SkillCommandBuilder.Build());
 
         return root;
     }

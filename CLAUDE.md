@@ -4,6 +4,26 @@
 
 В репозитории есть [`.claude/skills/yt/SKILL.md`](.claude/skills/yt/SKILL.md) — это пользовательский руководящий документ по работе с CLI `yt`. Его автоматически подхватывает Claude Code и другие совместимые AI-инструменты.
 
+Этот же файл встроен в бинарь как embedded resource (LogicalName `yt.skill.md`) и распространяется через команду `yt skill install`. Конечному пользователю не нужно знать про репозиторий — после установки `yt` через brew достаточно запустить `yt skill install`, чтобы получить skill в `~/.claude/skills/yt/SKILL.md` и `~/.agents/skills/yt/SKILL.md`.
+
+### Шпаргалка `yt skill`
+
+| Команда | Назначение |
+|---|---|
+| `yt skill install` | Установить в Claude и Codex (default `--target all --scope global`) |
+| `yt skill install --target claude --scope project` | В `./.claude/skills/yt/SKILL.md` |
+| `yt skill status` | Что установлено + version + `up_to_date` per location + `any_outdated` |
+| `yt skill update` | Перезаписать все уже установленные локации текущей версией CLI |
+| `yt skill check` | Ручная проверка устаревших skill (TTY → prompt; pipe → JSON warning) |
+| `yt skill check --no-prompt` | Только статус |
+| `yt skill check --reset-prompt-state` | Сбросить «больше не спрашивать» |
+| `yt skill uninstall` | Удалить |
+| `yt skill show --target claude` | Напечатать содержимое (как было бы записано) |
+
+Auto-check срабатывает при каждом вызове `yt <команда>` (skip для `skill *`, `--version`, `--help`, `--no-skill-check`, `YT_SKILL_CHECK=0`). State хранится в `~/.cache/yandex-tracker/skill-prompt-state.json`.
+
+В SKILL.md обязательно должен быть маркер `<!-- yt-version: {VERSION} -->` сразу после YAML frontmatter — `EmbeddedSkill.ReadAll()` подменяет `{VERSION}` на актуальную сборочную версию из `AssemblyInformationalVersionAttribute` (MinVer). По этому маркеру `status`/`update`/auto-check определяют, актуален ли установленный файл.
+
 ### Правило обновления скилла
 
 **При любом изменении публичного API CLI обязательно обновить SKILL.md.** Публичный API — это всё что видит конечный пользователь:

@@ -25,6 +25,11 @@ internal sealed class TestEnv : IDisposable
     public string ConfigPath => Path.Combine(_dir, "config.json");
 
     /// <summary>
+    /// Корень временной директории, используется как fake-HOME и project-dir в тестах.
+    /// </summary>
+    public string Root => _dir;
+
+    /// <summary>
     /// Инициализирует временную директорию и указывает на неё <c>YT_CONFIG_PATH</c>.
     /// </summary>
     public TestEnv()
@@ -47,6 +52,15 @@ internal sealed class TestEnv : IDisposable
         // onto the developer's real filesystem during tests.
         Set("XDG_CONFIG_HOME", Path.Combine(_dir, "xdg-config"));
         Set("XDG_CACHE_HOME", Path.Combine(_dir, "xdg-cache"));
+        // HOME / USERPROFILE — для тестов skill-команд (Claude global = ~/.claude/...,
+        // Codex global = ~/.codex/...). На .NET Environment.SpecialFolder.UserProfile
+        // на Unix читает HOME, на Windows — USERPROFILE.
+        Set("HOME", Path.Combine(_dir, "home"));
+        Set("USERPROFILE", Path.Combine(_dir, "home"));
+        Directory.CreateDirectory(Path.Combine(_dir, "home"));
+        // Disable skill auto-check by default — тесты должны быть детерминистичными,
+        // не должны спрашивать про обновление skill'а в Console.ReadLine.
+        Set("YT_SKILL_CHECK", "0");
     }
 
     /// <summary>

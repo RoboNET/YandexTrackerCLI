@@ -26,6 +26,7 @@
 - [Wire-log (отладка HTTP)](#wire-log-отладка-http)
 - [Exit-коды](#exit-коды)
 - [Безопасность](#безопасность)
+- [AI-ассистенты](#ai-ассистенты)
 - [Сборка из исходников](#сборка-из-исходников)
 - [Версионирование](#версионирование)
 - [Лицензия](#лицензия)
@@ -461,6 +462,36 @@ yt --log-raw --log-file ~/yt-raw.log auth login --type federated ...
 - **Wire-log по умолчанию маскирует** токены, refresh-tokens, OAuth коды, DPoP proofs. `--log-raw` отключает — используйте только для разовой отладки.
 - **`config list` / `config get`** маскирует значения `auth.token`, `auth.refresh_token`, `auth.private_key_pem` как `***`.
 - **Service Account JWT** подписывается локально (PS256) — приватный ключ не покидает машину; обменивается только на IAM-токен.
+
+## AI-ассистенты
+
+`yt` ставит [skill](https://docs.anthropic.com/en/docs/claude-code/skills) для Claude Code и [Codex skill](https://developers.openai.com/codex/skills) одной командой:
+
+```bash
+yt skill install                        # глобально, для Claude и Codex
+yt skill install --target claude        # только Claude
+yt skill install --target codex         # только Codex
+yt skill install --scope project        # в текущий проект (./.claude/, ./.agents/)
+yt skill install --scope project --project-dir /path/to/repo
+yt skill status                         # что установлено + какая версия + up_to_date
+yt skill update                         # перезаписать установленные локации актуальной версией CLI
+yt skill check                          # ручная проверка устаревших skill (TTY → prompt; pipe → JSON warning)
+yt skill check --no-prompt              # только статус, без интерактива
+yt skill check --reset-prompt-state     # сбросить «больше не спрашивать»
+yt skill uninstall                      # удалить
+yt skill show --target claude           # напечатать что было бы записано
+```
+
+| Target | Scope   | Путь                                       |
+| ------ | ------- | ------------------------------------------ |
+| Claude | Global  | `~/.claude/skills/yt/SKILL.md`             |
+| Claude | Project | `<projectDir>/.claude/skills/yt/SKILL.md`  |
+| Codex  | Global  | `~/.agents/skills/yt/SKILL.md`             |
+| Codex  | Project | `<projectDir>/.agents/skills/yt/SKILL.md`  |
+
+Skill содержит шпаргалку команд, exit-коды, паттерны парсинга JSON, правила безопасности (read-only, подтверждение перед mutating). После установки AI-ассистент знает как пользоваться `yt` без подсказок пользователя.
+
+После `brew upgrade yt` рекомендовано запустить `yt skill update` — перезапишет установленные локации актуальной версией. Можно положиться на встроенный auto-check: при первом запуске CLI после апдейта в TTY появится prompt с предложением обновить (выбор `Y`/`n`/`never` запоминается); в pipe выводится один раз JSON-warning в stderr. Отключить: `--no-skill-check` или `YT_SKILL_CHECK=0`.
 
 ## Сборка из исходников
 
