@@ -1,0 +1,93 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-tap:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: RoboNET/homebrew-yt
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Resolve version + SHA256
+        id: vars
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          curl -sSfL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/SHA256SUMS" -o /tmp/sums
+          cat /tmp/sums
+
+          echo "sha_osx_arm64=$(awk '/yt-osx-arm64\.tar\.gz/  {print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
+          echo "sha_linux_x64=$(awk '/yt-linux-x64\.tar\.gz/  {print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
+          echo "sha_linux_arm64=$(awk '/yt-linux-arm64\.tar\.gz/{print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Formula/yt.rb
+        env:
+          VERSION:         ${{ steps.vars.outputs.version }}
+          SHA_OSX_ARM64:   ${{ steps.vars.outputs.sha_osx_arm64 }}
+          SHA_LINUX_X64:   ${{ steps.vars.outputs.sha_linux_x64 }}
+          SHA_LINUX_ARM64: ${{ steps.vars.outputs.sha_linux_arm64 }}
+        run: |
+          mkdir -p tap/Formula
+          cat > tap/Formula/yt.rb <<EOF
+          class Yt < Formula
+            desc "Yandex Tracker CLI — NativeAOT, JSON-first, four auth methods"
+            homepage "https://github.com/RoboNET/YandexTrackerCLI"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v#{version}/yt-osx-arm64.tar.gz"
+                sha256 "${SHA_OSX_ARM64}"
+              end
+              on_intel do
+                odie "Intel Mac is not supported. Use Apple Silicon or build from source."
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v#{version}/yt-linux-x64.tar.gz"
+                sha256 "${SHA_LINUX_X64}"
+              end
+              on_arm do
+                url "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v#{version}/yt-linux-arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              end
+            end
+
+            def install
+              bin.install "yt"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/yt --version")
+            end
+          end
+          EOF
+
+          echo "--- generated formula ---"
+          cat tap/Formula/yt.rb
+
+      - name: Commit and push to tap
+        run: |
+          cd tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/yt.rb
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "yt ${{ steps.vars.outputs.version }}"
+            git push
+          fi

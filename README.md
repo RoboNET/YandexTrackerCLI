@@ -32,7 +32,19 @@
 
 ## Установка
 
-### Готовый бинарь (рекомендуется)
+### Homebrew (macOS Apple Silicon, Linux)
+
+```bash
+brew install RoboNET/yt/yt
+```
+
+После выпуска новой версии:
+
+```bash
+brew upgrade yt
+```
+
+### Готовый бинарь
 
 Скачайте архив для своей платформы со страницы [Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest):
 
