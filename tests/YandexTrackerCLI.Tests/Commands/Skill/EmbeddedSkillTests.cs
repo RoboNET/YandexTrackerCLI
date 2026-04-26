@@ -20,6 +20,15 @@ public sealed class EmbeddedSkillTests
     }
 
     [Test]
+    public async Task ReadAll_HasLfLineEndings()
+    {
+        // SKILL.md может оказаться с CRLF на Windows checkout (git autocrlf=true);
+        // ReadAll должен привести к LF, иначе тесты, сравнивающие на "---\n", упадут.
+        var content = EmbeddedSkill.ReadAll();
+        await Assert.That(content.Contains('\r')).IsFalse();
+    }
+
+    [Test]
     public async Task ReadBodyOnly_StripsFrontmatter()
     {
         var body = EmbeddedSkill.ReadBodyOnly();
@@ -77,7 +86,10 @@ public sealed class EmbeddedSkillTests
         }
 
         var workingCopy = File.ReadAllText(Path.Combine(repoRoot, ".claude", "skills", "yt", "SKILL.md"));
-        var withVersion = workingCopy.Replace("{VERSION}", EmbeddedSkill.GetVersion());
+        // Нормализуем CRLF→LF: на Windows git с autocrlf=true может закоммитить файл с CRLF;
+        // EmbeddedSkill.ReadAll также нормализует, поэтому сравнение должно идти на одинаковом базисе.
+        var workingCopyLf = workingCopy.Replace("\r\n", "\n").Replace("\r", "\n");
+        var withVersion = workingCopyLf.Replace("{VERSION}", EmbeddedSkill.GetVersion());
         var embedded = EmbeddedSkill.ReadAll();
 
         var sha1 = Sha256(withVersion);

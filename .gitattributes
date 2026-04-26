@@ -1,0 +1,10 @@
+# Force LF line endings for files that are read as text resources or templates.
+# Keeps embedded SKILL.md and other text artifacts byte-identical across platforms,
+# so binary contents (and tests asserting on `\n`) remain stable on Windows CI.
+.claude/skills/yt/SKILL.md text eol=lf
+*.md text eol=lf
+*.cs text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf

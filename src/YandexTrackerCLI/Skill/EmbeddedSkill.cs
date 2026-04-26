@@ -45,7 +45,27 @@ public static class EmbeddedSkill
                 $"Embedded resource '{ResourceName}' not found in assembly '{asm.GetName().Name}'.");
         using var reader = new StreamReader(stream);
         var raw = reader.ReadToEnd();
-        return raw.Replace("{VERSION}", GetVersion(), StringComparison.Ordinal);
+        // Нормализуем переводы строк к LF: на Windows git с autocrlf=true может закоммитить/чекаутить
+        // SKILL.md с CRLF, что приводит к расхождению между embedded ресурсом и тестами,
+        // ассертящими на `"---\n"` или сравнивающими SHA-хеши.
+        var normalized = NormalizeLineEndings(raw);
+        return normalized.Replace("{VERSION}", GetVersion(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Приводит CRLF и одиночные CR к LF. Используется для embedded SKILL.md, чтобы
+    /// гарантировать стабильное содержимое независимо от настроек <c>core.autocrlf</c> на платформе,
+    /// где собирается бинарь.
+    /// </summary>
+    /// <param name="text">Исходный текст с произвольными переводами строк.</param>
+    /// <returns>Текст с переводами строк, нормализованными к LF.</returns>
+    private static string NormalizeLineEndings(string text)
+    {
+        if (string.IsNullOrEmpty(text) || text.IndexOf('\r') < 0)
+        {
+            return text;
+        }
+        return text.Replace("\r\n", "\n").Replace("\r", "\n");
     }
 
     /// <summary>
