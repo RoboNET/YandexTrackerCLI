@@ -28,10 +28,26 @@ public static class SkillInstallPrompt
     public static readonly AsyncLocal<ISkillInstallPrompt?> TestOverride = new();
 
     /// <summary>
-    /// Возвращает фактическую реализацию prompt'а: либо <see cref="TestOverride"/>, либо
-    /// console-based default.
+    /// Возвращает фактическую реализацию prompt'а: <see cref="TestOverride"/> →
+    /// Spectre (если stderr/stdin не redirected) → console fallback.
     /// </summary>
-    public static ISkillInstallPrompt Current => TestOverride.Value ?? ConsoleSkillInstallPrompt.Instance;
+    public static ISkillInstallPrompt Current
+    {
+        get
+        {
+            if (TestOverride.Value is { } over)
+            {
+                return over;
+            }
+            // Для prompt'а нам достаточно живого stderr (мы туда пишем декорации) и stdin.
+            // stdout может быть redirected (например, JSON-pipe) — это OK.
+            if (!Console.IsErrorRedirected && !Console.IsInputRedirected)
+            {
+                return SpectreSkillInstallPrompt.Default;
+            }
+            return ConsoleSkillInstallPrompt.Instance;
+        }
+    }
 }
 
 /// <summary>

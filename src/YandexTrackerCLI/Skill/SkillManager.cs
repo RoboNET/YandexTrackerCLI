@@ -217,6 +217,24 @@ public static class SkillManager
         IReadOnlyCollection<SkillTarget> targets,
         IReadOnlyCollection<SkillScope> scopes,
         string projectDir)
+        => Update(targets, scopes, projectDir, progress: null);
+
+    /// <summary>
+    /// Overload <see cref="Update(IReadOnlyCollection{SkillTarget}, IReadOnlyCollection{SkillScope}, string)"/>
+    /// с per-location progress callback'ом. Эмитит <see cref="SkillProgressKind.Started"/>
+    /// перед записью и <see cref="SkillProgressKind.Wrote"/> или <see cref="SkillProgressKind.Failed"/>
+    /// после; локации, где skill не установлен, не эмитят ничего.
+    /// </summary>
+    /// <param name="targets">Какие <see cref="SkillTarget"/> рассматривать.</param>
+    /// <param name="scopes">Какие <see cref="SkillScope"/> рассматривать.</param>
+    /// <param name="projectDir">Корень проекта.</param>
+    /// <param name="progress">Опциональный progress-receiver (null — без событий).</param>
+    /// <returns>Список переустановленных локаций.</returns>
+    public static IReadOnlyList<InstallResult> Update(
+        IReadOnlyCollection<SkillTarget> targets,
+        IReadOnlyCollection<SkillScope> scopes,
+        string projectDir,
+        IProgress<SkillProgressEvent>? progress)
     {
         var status = GetStatus(projectDir);
         var results = new List<InstallResult>();
@@ -228,9 +246,26 @@ public static class SkillManager
                 continue;
             }
 
-            // Force=true — апдейт всегда перезаписывает.
-            var written = Install(inst.Target, inst.Scope, projectDir, force: true);
-            results.Add(written with { FromVersion = inst.Version });
+            progress?.Report(new SkillProgressEvent(
+                inst.Target, inst.Scope, inst.Path, SkillProgressKind.Started, Version: null, Error: null));
+
+            try
+            {
+                // Force=true — апдейт всегда перезаписывает.
+                var written = Install(inst.Target, inst.Scope, projectDir, force: true);
+                var withFrom = written with { FromVersion = inst.Version };
+                results.Add(withFrom);
+                progress?.Report(new SkillProgressEvent(
+                    written.Target, written.Scope, written.Path,
+                    SkillProgressKind.Wrote, written.Version, Error: null));
+            }
+            catch (Exception ex)
+            {
+                progress?.Report(new SkillProgressEvent(
+                    inst.Target, inst.Scope, inst.Path,
+                    SkillProgressKind.Failed, Version: null, Error: ex.Message));
+                throw;
+            }
         }
 
         return results;

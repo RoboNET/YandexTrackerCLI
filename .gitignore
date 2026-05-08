@@ -500,6 +500,7 @@ $RECYCLE.BIN/
 
 # Локальные артефакты сборки и приватные планы
 dist/
+dist-aot/
 docs/superpowers/
 
 # Логи отладки

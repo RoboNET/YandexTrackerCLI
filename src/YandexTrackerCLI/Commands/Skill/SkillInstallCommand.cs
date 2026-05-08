@@ -3,6 +3,7 @@ namespace YandexTrackerCLI.Commands.Skill;
 using System.CommandLine;
 using Core.Api.Errors;
 using Output;
+using Spectre.Console;
 using YandexTrackerCLI.Skill;
 
 /// <summary>
@@ -99,45 +100,60 @@ public static class SkillInstallCommand
                     scopes = SkillCommandOptions.ParseScopes(rawScope ?? SkillCommandOptions.ScopeGlobal);
                 }
 
+                var format = CommandFormatHelper.ResolveForCommand(parseResult);
+                var useProgress = format is not OutputFormat.Json and not OutputFormat.Minimal
+                    && !Console.IsErrorRedirected
+                    && !Console.IsOutputRedirected;
+
                 var results = new List<SkillManager.InstallResult>();
                 var skipped = new List<SkillManager.SkippedInstall>();
-                foreach (var t in targets)
+
+                void DoInstall()
                 {
-                    foreach (var s in scopes)
+                    foreach (var t in targets)
                     {
-                        try
+                        foreach (var s in scopes)
                         {
-                            var installed = SkillManager.TryInstall(t, s, projectDir, force, out var skip);
-                            if (installed is not null)
+                            try
                             {
-                                results.Add(installed);
+                                var installed = SkillManager.TryInstall(t, s, projectDir, force, out var skip);
+                                if (installed is not null)
+                                {
+                                    results.Add(installed);
+                                }
+                                else if (skip is not null)
+                                {
+                                    skipped.Add(skip);
+                                }
                             }
-                            else if (skip is not null)
+                            catch (TrackerException ex) when (ex.Code == ErrorCode.InvalidArgs)
                             {
-                                skipped.Add(skip);
-                            }
-                        }
-                        catch (TrackerException ex) when (ex.Code == ErrorCode.InvalidArgs)
-                        {
-                            // Файл существует и пользователь отказался от --force.
-                            // В non-interactive (CLI без --force) это ошибка; чтобы сохранить
-                            // совместимость со старым поведением, пробрасываем дальше.
-                            // В interactive-режиме пользователь уже видел prompt, поэтому
-                            // тихо пропускаем (записываем как skipped).
-                            if (SkillInstallCommandHelpers.ShouldRunInteractive(userPassedTarget, userPassedScope, noPrompt))
-                            {
-                                skipped.Add(new SkillManager.SkippedInstall(t, s, ex.Message));
-                            }
-                            else
-                            {
-                                throw;
+                                if (SkillInstallCommandHelpers.ShouldRunInteractive(userPassedTarget, userPassedScope, noPrompt))
+                                {
+                                    skipped.Add(new SkillManager.SkippedInstall(t, s, ex.Message));
+                                }
+                                else
+                                {
+                                    throw;
+                                }
                             }
                         }
                     }
                 }
 
+                if (useProgress && targets.Count + scopes.Count > 2)
+                {
+                    var ansi = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
+                    ansi.Status().Start(
+                        $"Устанавливаем skill в {targets.Count}×{scopes.Count} локаций...",
+                        _ => DoInstall());
+                }
+                else
+                {
+                    DoInstall();
+                }
+
                 using var doc = SkillJsonFormatter.FormatInstall(results, skipped);
-                var format = CommandFormatHelper.ResolveForCommand(parseResult);
                 JsonWriter.Write(Console.Out, doc.RootElement, format, pretty: CommandFormatHelper.ResolvePretty());
                 return Task.FromResult(0);
             }

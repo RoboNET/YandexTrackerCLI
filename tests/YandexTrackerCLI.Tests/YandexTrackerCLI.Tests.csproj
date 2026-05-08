@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="TUnit" Version="1.37.36" />
+    <PackageReference Include="Spectre.Console.Testing" Version="0.55.2" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\YandexTrackerCLI\YandexTrackerCLI.csproj" />

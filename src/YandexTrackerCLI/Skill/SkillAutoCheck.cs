@@ -1,6 +1,7 @@
 namespace YandexTrackerCLI.Skill;
 
 using System.Text.Json;
+using Spectre.Console;
 
 /// <summary>
 /// Auto-check механизм: при запуске CLI проверяет, что установленный skill
@@ -38,6 +39,14 @@ public static class SkillAutoCheck
     /// Test-hook для подмены stderr. См. <see cref="TestStdout"/>.
     /// </summary>
     public static readonly AsyncLocal<TextWriter?> TestStderr = new();
+
+    /// <summary>
+    /// Test-hook для подмены <see cref="IAnsiConsole"/>, который используется в
+    /// Spectre-варианте interactive-prompt'а. Если <see cref="TestPromptReader"/>
+    /// не задан и stderr не redirected — будет использован этот override (либо
+    /// stderr-обёртка по дефолту).
+    /// </summary>
+    public static readonly AsyncLocal<IAnsiConsole?> TestAnsiConsole = new();
 
     /// <summary>
     /// Возвращает <c>true</c>, если auto-check должен быть пропущен исходя из аргументов команды.
@@ -174,6 +183,20 @@ public static class SkillAutoCheck
 
     private static void HandleInteractive(SkillPromptState state, SkillManager.Status status, string projectDir)
     {
+        // Если задан TestPromptReader — идём по legacy-пути с Console.ReadLine-парсером.
+        // В production (TestPromptReader == null) и не-redirected stderr — используем Spectre.
+        var useSpectre = TestPromptReader.Value is null && !Console.IsErrorRedirected;
+        if (useSpectre)
+        {
+            HandleInteractiveSpectre(state, status, projectDir);
+            return;
+        }
+
+        HandleInteractiveLegacy(state, status, projectDir);
+    }
+
+    private static void HandleInteractiveLegacy(SkillPromptState state, SkillManager.Status status, string projectDir)
+    {
         var outdated = status.Outdated().ToArray();
         var stdout = Stdout();
 
@@ -231,6 +254,86 @@ public static class SkillAutoCheck
                 state.DeclinedForVersions.Add(status.CurrentVersion);
             }
             stdout.WriteLine("Пропущено для этой версии.");
+        }
+        TrySave(state);
+    }
+
+    private static void HandleInteractiveSpectre(SkillPromptState state, SkillManager.Status status, string projectDir)
+    {
+        var ansi = TestAnsiConsole.Value
+            ?? AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
+
+        var outdated = status.Outdated().ToArray();
+
+        ansi.WriteLine();
+        if (outdated.Length == 1)
+        {
+            var i = outdated[0];
+            ansi.MarkupLineInterpolated(
+                $"[yellow]yt skill устарел[/]: {LocLabel(i)} ([dim]{i.Path}[/]) — [red]{i.Version}[/], текущий — [green]{status.CurrentVersion}[/].");
+        }
+        else
+        {
+            ansi.MarkupLine("[yellow]yt skill устарел в нескольких местах:[/]");
+            var table = new Table().Border(TableBorder.Rounded);
+            table.AddColumn("Target");
+            table.AddColumn("Path");
+            table.AddColumn("Installed");
+            table.AddColumn("Current");
+            foreach (var i in outdated)
+            {
+                table.AddRow(
+                    LocLabel(i),
+                    i.Path,
+                    $"[red]{i.Version}[/]",
+                    $"[green]{status.CurrentVersion}[/]");
+            }
+            ansi.Write(table);
+        }
+
+        const string updateNow = "Обновить сейчас";
+        const string notNow = "Не сейчас";
+        const string never = "Больше не спрашивать";
+
+        var choice = ansi.Prompt(new SelectionPrompt<string>()
+            .Title("Что делать?")
+            .AddChoices(updateNow, notNow, never));
+
+        if (choice == updateNow)
+        {
+            var allTargets = new[]
+            {
+                SkillTarget.Claude,
+                SkillTarget.Codex,
+                SkillTarget.Gemini,
+                SkillTarget.Cursor,
+                SkillTarget.Copilot,
+            };
+            var allScopes = new[] { SkillScope.Global, SkillScope.Project };
+
+            IReadOnlyList<SkillManager.InstallResult> results = Array.Empty<SkillManager.InstallResult>();
+            ansi.Status().Start(
+                $"Обновляем skill в {outdated.Length} локациях...",
+                _ => { results = SkillManager.Update(allTargets, allScopes, projectDir); });
+
+            foreach (var r in results)
+            {
+                ansi.MarkupLineInterpolated(
+                    $"[green]✓[/] {LocLabel(r.Target, r.Scope)} ([dim]{r.Path}[/]) {r.FromVersion ?? "?"} → [green]{r.Version}[/]");
+            }
+        }
+        else if (choice == never)
+        {
+            state.NeverPrompt = true;
+            ansi.MarkupLine("[dim]Больше не спрашивать (yt skill check --reset-prompt-state — сбросить).[/]");
+        }
+        else
+        {
+            if (!state.DeclinedForVersions.Contains(status.CurrentVersion, StringComparer.Ordinal))
+            {
+                state.DeclinedForVersions.Add(status.CurrentVersion);
+            }
+            ansi.MarkupLine("[dim]Пропущено для этой версии.[/]");
         }
         TrySave(state);
     }
