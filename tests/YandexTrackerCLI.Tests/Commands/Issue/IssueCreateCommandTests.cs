@@ -97,30 +97,46 @@ public sealed class IssueCreateCommandTests
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "issue", "create", "--json-file", path }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("summary").GetString()).IsEqualTo("from file");
+        await Assert.That(doc.RootElement.GetProperty("customFields").GetProperty("x").GetString()).IsEqualTo("y");
     }
 
     /// <summary>
-    /// Комбинация typed и raw режимов запрещена — exit 2, error.code = invalid_args.
+    /// Merge: <c>--json-file</c> + scalar inline-флаги => override побеждает,
+    /// неоверайдные поля сохраняются.
     /// </summary>
     [Test]
-    public async Task Create_Typed_And_JsonFile_Returns_Exit2()
+    public async Task Create_JsonFile_WithInlineOverride_Merges()
     {
         using var env = new TestEnv();
         env.SetConfig(TestEnv.MinimalOAuthConfig);
-        var path = Path.Combine(Path.GetTempPath(), "c-" + Guid.NewGuid() + ".json");
-        await File.WriteAllTextAsync(path, "{}");
+        var path = Path.Combine(Path.GetTempPath(), "create-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path,
+            """{"queue":"DEV","summary":"old","customFields":{"x":"y"}}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.Created);
+            r.Content = new StringContent("""{"key":"DEV-3"}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
 
         var sw = new StringWriter();
         var er = new StringWriter();
         var exit = await env.Invoke(
-            new[] { "issue", "create", "--queue", "DEV", "--summary", "x", "--json-file", path },
-            sw,
-            er);
-
-        await Assert.That(exit).IsEqualTo(2);
-        using var doc = JsonDocument.Parse(er.ToString());
-        await Assert.That(doc.RootElement.GetProperty("error").GetProperty("code").GetString()).IsEqualTo("invalid_args");
+            new[] { "issue", "create", "--json-file", path, "--summary", "new", "--priority", "minor" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("summary").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("priority").GetString()).IsEqualTo("minor");
+        await Assert.That(doc.RootElement.GetProperty("customFields").GetProperty("x").GetString()).IsEqualTo("y");
     }
 
     /// <summary>

@@ -1,7 +1,6 @@
 namespace YandexTrackerCLI.Commands.Issue;
 
 using System.CommandLine;
-using System.Text;
 using System.Text.Json;
 using Core.Api.Errors;
 using Input;
@@ -9,18 +8,10 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt issue create</c>: создаёт задачу (<c>POST /v3/issues</c>).
-/// Поддерживает два режима задания payload:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через флаги <c>--queue</c>, <c>--summary</c>, <c>--description</c>,
-///     <c>--type</c>, <c>--priority</c>, <c>--assignee</c>. <c>--queue</c> и <c>--summary</c>
-///     обязательны в этом режиме.
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-флагами).
-///   </description></item>
-/// </list>
+/// Тело собирается через <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаги
+/// (<c>--queue</c>, <c>--summary</c>, <c>--description</c>, <c>--type</c>,
+/// <c>--priority</c>, <c>--assignee</c>) мерджатся поверх raw-payload.
+/// Эффективное тело должно содержать <c>queue</c> и <c>summary</c>.
 /// </summary>
 public static class IssueCreateCommand
 {
@@ -30,12 +21,12 @@ public static class IssueCreateCommand
     /// <returns>Сконфигурированная <see cref="Command"/>.</returns>
     public static Command Build()
     {
-        var queueOpt = new Option<string?>("--queue") { Description = "Ключ очереди (например DEV)." };
-        var summaryOpt = new Option<string?>("--summary") { Description = "Заголовок задачи." };
-        var descriptionOpt = new Option<string?>("--description") { Description = "Описание." };
-        var typeOpt = new Option<string?>("--type") { Description = "Тип задачи (bug, task, ...)." };
-        var priorityOpt = new Option<string?>("--priority") { Description = "Приоритет." };
-        var assigneeOpt = new Option<string?>("--assignee") { Description = "Исполнитель." };
+        var queueOpt = new Option<string?>("--queue") { Description = "Ключ очереди (override поля queue)." };
+        var summaryOpt = new Option<string?>("--summary") { Description = "Заголовок задачи (override поля summary)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Описание (override поля description)." };
+        var typeOpt = new Option<string?>("--type") { Description = "Тип задачи (override поля type)." };
+        var priorityOpt = new Option<string?>("--priority") { Description = "Приоритет (override поля priority)." };
+        var assigneeOpt = new Option<string?>("--assignee") { Description = "Исполнитель (override поля assignee)." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
@@ -62,35 +53,48 @@ public static class IssueCreateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(queue) || !string.IsNullOrWhiteSpace(summary) ||
-                    !string.IsNullOrWhiteSpace(description) || !string.IsNullOrWhiteSpace(type) ||
-                    !string.IsNullOrWhiteSpace(priority) || !string.IsNullOrWhiteSpace(assignee);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(queue))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine typed options (--queue/--summary/...) with --json-file/--json-stdin.");
+                    overrides.Add(("queue", JsonBodyMerger.OverrideValue.Of(queue!)));
+                }
+                if (!string.IsNullOrWhiteSpace(summary))
+                {
+                    overrides.Add(("summary", JsonBodyMerger.OverrideValue.Of(summary!)));
+                }
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
+                }
+                if (!string.IsNullOrWhiteSpace(type))
+                {
+                    overrides.Add(("type", JsonBodyMerger.OverrideValue.Of(type!)));
+                }
+                if (!string.IsNullOrWhiteSpace(priority))
+                {
+                    overrides.Add(("priority", JsonBodyMerger.OverrideValue.Of(priority!)));
+                }
+                if (!string.IsNullOrWhiteSpace(assignee))
+                {
+                    overrides.Add(("assignee", JsonBodyMerger.OverrideValue.Of(assignee!)));
                 }
 
-                string body;
-                if (hasRaw)
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
+                        "Specify --json-file, --json-stdin, or inline flags.");
+
+                using (var doc = JsonDocument.Parse(body))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (string.IsNullOrWhiteSpace(queue) || string.IsNullOrWhiteSpace(summary))
+                    if (!doc.RootElement.TryGetProperty("queue", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "--queue and --summary are required unless --json-file/--json-stdin is used.");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'queue'.");
                     }
-
-                    body = BuildTypedBody(queue, summary, description, type, priority, assignee);
+                    if (!doc.RootElement.TryGetProperty("summary", out _))
+                    {
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'summary'.");
+                    }
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -114,56 +118,5 @@ public static class IssueCreateCommand
         });
 
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит минимальное JSON-тело запроса для типизированного режима.
-    /// Опциональные поля добавляются только при наличии непустого значения.
-    /// </summary>
-    /// <param name="queue">Ключ очереди (обязательное поле).</param>
-    /// <param name="summary">Заголовок задачи (обязательное поле).</param>
-    /// <param name="description">Описание задачи (необязательное).</param>
-    /// <param name="type">Тип задачи (необязательное).</param>
-    /// <param name="priority">Приоритет (необязательное).</param>
-    /// <param name="assignee">Исполнитель (необязательное).</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    private static string BuildTypedBody(
-        string queue,
-        string summary,
-        string? description,
-        string? type,
-        string? priority,
-        string? assignee)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteString("queue", queue);
-            w.WriteString("summary", summary);
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                w.WriteString("description", description);
-            }
-
-            if (!string.IsNullOrWhiteSpace(type))
-            {
-                w.WriteString("type", type);
-            }
-
-            if (!string.IsNullOrWhiteSpace(priority))
-            {
-                w.WriteString("priority", priority);
-            }
-
-            if (!string.IsNullOrWhiteSpace(assignee))
-            {
-                w.WriteString("assignee", assignee);
-            }
-
-            w.WriteEndObject();
-        }
-
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }
