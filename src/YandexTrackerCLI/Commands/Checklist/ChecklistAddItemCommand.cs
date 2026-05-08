@@ -2,7 +2,6 @@ namespace YandexTrackerCLI.Commands.Checklist;
 
 using System.CommandLine;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using Core.Api.Errors;
 using Input;
@@ -10,18 +9,10 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt checklist add-item &lt;issue-key&gt;</c>: добавляет пункт чек-листа
-/// задачи (<c>POST /v3/issues/{key}/checklistItems</c>). Поддерживает два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через <c>--text</c> (обязательный), плюс опционально
-///     <c>--assignee</c> и <c>--deadline &lt;ISO8601&gt;</c>. В теле запроса формируется
-///     объект <c>{"text":"...","assignee":"...","deadline":"..."}</c>.
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-опциями).
-///   </description></item>
-/// </list>
+/// (<c>POST /v3/issues/{key}/checklistItems</c>). Тело собирается через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаги
+/// (<c>--text</c>, <c>--assignee</c>, <c>--deadline</c>) мерджатся поверх raw-payload.
+/// Эффективное тело должно содержать поле <c>text</c>.
 /// </summary>
 public static class ChecklistAddItemCommand
 {
@@ -32,11 +23,11 @@ public static class ChecklistAddItemCommand
     public static Command Build()
     {
         var keyArg = new Argument<string>("issue-key") { Description = "Ключ задачи (например DEV-1)." };
-        var textOpt = new Option<string?>("--text") { Description = "Текст пункта чек-листа." };
-        var assigneeOpt = new Option<string?>("--assignee") { Description = "Логин или ID исполнителя пункта." };
+        var textOpt = new Option<string?>("--text") { Description = "Текст пункта чек-листа (override поля text)." };
+        var assigneeOpt = new Option<string?>("--assignee") { Description = "Логин/ID исполнителя (override поля assignee)." };
         var deadlineOpt = new Option<string?>("--deadline")
         {
-            Description = "Дедлайн пункта в формате ISO 8601 (например 2024-01-15T10:00:00+03:00).",
+            Description = "Дедлайн ISO 8601 (override поля deadline; например 2024-01-15T10:00:00+03:00).",
         };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
@@ -62,46 +53,36 @@ public static class ChecklistAddItemCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped = !string.IsNullOrWhiteSpace(text)
-                    || !string.IsNullOrWhiteSpace(assignee)
-                    || !string.IsNullOrWhiteSpace(deadline);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                if (!string.IsNullOrWhiteSpace(deadline))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --text/--assignee/--deadline with --json-file/--json-stdin.");
+                    ValidateIso8601DateTime(deadline!);
                 }
 
-                if (!hasTyped && !hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(text))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("text", JsonBodyMerger.OverrideValue.Of(text!)));
+                }
+                if (!string.IsNullOrWhiteSpace(assignee))
+                {
+                    overrides.Add(("assignee", JsonBodyMerger.OverrideValue.Of(assignee!)));
+                }
+                if (!string.IsNullOrWhiteSpace(deadline))
+                {
+                    overrides.Add(("deadline", JsonBodyMerger.OverrideValue.Of(deadline!)));
+                }
+
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Provide --text (optionally --assignee/--deadline) or --json-file/--json-stdin.");
-                }
 
-                string body;
-                if (hasRaw)
+                using (var doc = JsonDocument.Parse(body))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (string.IsNullOrWhiteSpace(text))
+                    if (!doc.RootElement.TryGetProperty("text", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "--text is required in typed mode.");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'text'.");
                     }
-
-                    if (!string.IsNullOrWhiteSpace(deadline))
-                    {
-                        ValidateIso8601DateTime(deadline);
-                    }
-
-                    body = BuildTypedBody(text, assignee, deadline);
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -130,36 +111,9 @@ public static class ChecklistAddItemCommand
     }
 
     /// <summary>
-    /// Строит JSON-тело запроса для типизированного режима, включая только заданные
-    /// (non-null, non-whitespace) поля.
-    /// </summary>
-    /// <param name="text">Текст пункта (обязательно).</param>
-    /// <param name="assignee">Опциональный исполнитель.</param>
-    /// <param name="deadline">Опциональный ISO 8601 дедлайн.</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    internal static string BuildTypedBody(string text, string? assignee, string? deadline)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteString("text", text);
-            if (!string.IsNullOrWhiteSpace(assignee))
-            {
-                w.WriteString("assignee", assignee);
-            }
-            if (!string.IsNullOrWhiteSpace(deadline))
-            {
-                w.WriteString("deadline", deadline);
-            }
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
-    }
-
-    /// <summary>
     /// Проверяет, что строка соответствует формату ISO 8601 date/time (парсится через
     /// <see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>).
+    /// Используется также из <see cref="ChecklistUpdateCommand"/>.
     /// </summary>
     /// <param name="value">Значение опции <c>--deadline</c>.</param>
     /// <exception cref="TrackerException">
