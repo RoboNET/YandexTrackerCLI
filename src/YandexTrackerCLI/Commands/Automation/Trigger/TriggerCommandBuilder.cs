@@ -20,6 +20,8 @@ public static class TriggerCommandBuilder
         cmd.Subcommands.Add(TriggerCreateCommand.Build());
         cmd.Subcommands.Add(TriggerUpdateCommand.Build());
         cmd.Subcommands.Add(TriggerDeleteCommand.Build());
+        cmd.Subcommands.Add(TriggerActivateCommand.Build());
+        cmd.Subcommands.Add(TriggerDeactivateCommand.Build());
         return cmd;
     }
 }
