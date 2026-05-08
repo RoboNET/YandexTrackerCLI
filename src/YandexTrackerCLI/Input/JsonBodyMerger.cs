@@ -80,6 +80,7 @@ public static class JsonBodyMerger
             w.WriteStartObject();
 
             var written = new HashSet<string>(StringComparer.Ordinal);
+            var ovIndex = BuildOverrideIndex(overrides);
 
             if (!string.IsNullOrWhiteSpace(rawJson))
             {
@@ -91,7 +92,6 @@ public static class JsonBodyMerger
                         "JSON body must be an object to merge inline overrides.");
                 }
 
-                var ovIndex = BuildOverrideIndex(overrides);
                 foreach (var prop in doc.RootElement.EnumerateObject())
                 {
                     if (ovIndex.TryGetValue(prop.Name, out var ov))
@@ -111,7 +111,7 @@ public static class JsonBodyMerger
             {
                 if (written.Add(key))
                 {
-                    val.Write(w, key);
+                    ovIndex[key].Write(w, key);
                 }
             }
 
