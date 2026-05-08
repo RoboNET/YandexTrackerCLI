@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: RoboNET/scoop-yt
-          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: bucket
 
       - name: Resolve version + SHA256
