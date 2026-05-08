@@ -79,6 +79,38 @@ public sealed class CommentUpdateCommandTests
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "comment", "update", "DEV-1", "42", "--json-file", path }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("raw");
+        await Assert.That(doc.RootElement.GetProperty("longText").ValueKind).IsEqualTo(JsonValueKind.Object);
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> с base text + inline <c>--text</c> => inline override побеждает.
+    /// </summary>
+    [Test]
+    public async Task CommentUpdate_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "comm-upd-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"text":"old","longText":{"ops":[]}}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":"42"}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "comment", "update", "DEV-1", "42", "--json-file", path, "--text", "new" }, sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("longText").ValueKind).IsEqualTo(JsonValueKind.Object);
     }
 }
