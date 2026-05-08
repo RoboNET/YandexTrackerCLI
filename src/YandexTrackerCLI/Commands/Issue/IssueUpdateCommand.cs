@@ -1,26 +1,16 @@
 namespace YandexTrackerCLI.Commands.Issue;
 
 using System.CommandLine;
-using System.Text;
-using System.Text.Json;
 using Core.Api.Errors;
 using Input;
 using Output;
 
 /// <summary>
-/// Команда <c>yt issue update &lt;key&gt;</c>: обновляет задачу (<c>PATCH /v3/issues/{key}</c>).
-/// Поддерживает два режима задания payload:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через опциональные флаги <c>--summary</c>, <c>--description</c>,
-///     <c>--type</c>, <c>--priority</c>, <c>--assignee</c>. Должен быть указан хотя бы один
-///     (иначе нечего обновлять).
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-флагами).
-///   </description></item>
-/// </list>
+/// Команда <c>yt issue update &lt;key&gt;</c>: обновляет задачу
+/// (<c>PATCH /v3/issues/{key}</c>). Тело собирается через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаги
+/// (<c>--summary</c>, <c>--description</c>, <c>--type</c>, <c>--priority</c>,
+/// <c>--assignee</c>) мерджатся поверх raw-payload.
 /// </summary>
 public static class IssueUpdateCommand
 {
@@ -32,11 +22,11 @@ public static class IssueUpdateCommand
     {
         var keyArg = new Argument<string>("key") { Description = "Ключ задачи (например DEV-1)." };
 
-        var summaryOpt = new Option<string?>("--summary") { Description = "Новый заголовок задачи." };
-        var descriptionOpt = new Option<string?>("--description") { Description = "Новое описание." };
-        var typeOpt = new Option<string?>("--type") { Description = "Новый тип задачи (bug, task, ...)." };
-        var priorityOpt = new Option<string?>("--priority") { Description = "Новый приоритет." };
-        var assigneeOpt = new Option<string?>("--assignee") { Description = "Новый исполнитель." };
+        var summaryOpt = new Option<string?>("--summary") { Description = "Новый заголовок (override поля summary)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Новое описание (override поля description)." };
+        var typeOpt = new Option<string?>("--type") { Description = "Новый тип (override поля type)." };
+        var priorityOpt = new Option<string?>("--priority") { Description = "Новый приоритет (override поля priority)." };
+        var assigneeOpt = new Option<string?>("--assignee") { Description = "Новый исполнитель (override поля assignee)." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
@@ -63,36 +53,31 @@ public static class IssueUpdateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(summary) || !string.IsNullOrWhiteSpace(description) ||
-                    !string.IsNullOrWhiteSpace(type) || !string.IsNullOrWhiteSpace(priority) ||
-                    !string.IsNullOrWhiteSpace(assignee);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(summary))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine typed options with --json-file/--json-stdin.");
+                    overrides.Add(("summary", JsonBodyMerger.OverrideValue.Of(summary!)));
+                }
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
+                }
+                if (!string.IsNullOrWhiteSpace(type))
+                {
+                    overrides.Add(("type", JsonBodyMerger.OverrideValue.Of(type!)));
+                }
+                if (!string.IsNullOrWhiteSpace(priority))
+                {
+                    overrides.Add(("priority", JsonBodyMerger.OverrideValue.Of(priority!)));
+                }
+                if (!string.IsNullOrWhiteSpace(assignee))
+                {
+                    overrides.Add(("assignee", JsonBodyMerger.OverrideValue.Of(assignee!)));
                 }
 
-                if (!hasTyped && !hasRaw)
-                {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Nothing to update: specify at least one typed option or use --json-file/--json-stdin.");
-                }
-
-                string body;
-                if (hasRaw)
-                {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    body = BuildTypedBody(summary, description, type, priority, assignee);
-                }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -115,57 +100,5 @@ public static class IssueUpdateCommand
         });
 
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит JSON-тело для типизированного режима update. В теле окажутся только поля
-    /// с непустыми значениями (PATCH-семантика: отсутствующее поле не трогаем).
-    /// </summary>
-    /// <param name="summary">Новый заголовок (необязательное).</param>
-    /// <param name="description">Новое описание (необязательное).</param>
-    /// <param name="type">Новый тип (необязательное).</param>
-    /// <param name="priority">Новый приоритет (необязательное).</param>
-    /// <param name="assignee">Новый исполнитель (необязательное).</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    private static string BuildTypedBody(
-        string? summary,
-        string? description,
-        string? type,
-        string? priority,
-        string? assignee)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            if (!string.IsNullOrWhiteSpace(summary))
-            {
-                w.WriteString("summary", summary);
-            }
-
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                w.WriteString("description", description);
-            }
-
-            if (!string.IsNullOrWhiteSpace(type))
-            {
-                w.WriteString("type", type);
-            }
-
-            if (!string.IsNullOrWhiteSpace(priority))
-            {
-                w.WriteString("priority", priority);
-            }
-
-            if (!string.IsNullOrWhiteSpace(assignee))
-            {
-                w.WriteString("assignee", assignee);
-            }
-
-            w.WriteEndObject();
-        }
-
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

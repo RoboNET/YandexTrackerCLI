@@ -79,7 +79,41 @@ public sealed class IssueUpdateCommandTests
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "issue", "update", "DEV-1", "--json-file", path }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("customFields").GetProperty("story_points").GetInt32()).IsEqualTo(5);
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + scalar inline <c>--summary</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task Update_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "u-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"summary":"old","customFields":{"story_points":5}}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"key":"DEV-1"}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "issue", "update", "DEV-1", "--json-file", path, "--summary", "new" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("summary").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("customFields").GetProperty("story_points").GetInt32()).IsEqualTo(5);
     }
 
     /// <summary>
@@ -97,23 +131,4 @@ public sealed class IssueUpdateCommandTests
         await Assert.That(exit).IsEqualTo(2);
     }
 
-    /// <summary>
-    /// Комбинация typed и raw режимов запрещена — exit 2.
-    /// </summary>
-    [Test]
-    public async Task Update_Typed_And_JsonFile_Returns_Exit2()
-    {
-        using var env = new TestEnv();
-        env.SetConfig(TestEnv.MinimalOAuthConfig);
-        var path = Path.Combine(Path.GetTempPath(), "u-" + Guid.NewGuid() + ".json");
-        await File.WriteAllTextAsync(path, "{}");
-
-        var sw = new StringWriter();
-        var er = new StringWriter();
-        var exit = await env.Invoke(
-            new[] { "issue", "update", "DEV-1", "--summary", "s", "--json-file", path },
-            sw,
-            er);
-        await Assert.That(exit).IsEqualTo(2);
-    }
 }
