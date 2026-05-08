@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Core.Api;
 using Core.Api.Errors;
+using Interactive;
 using Output;
 
 /// <summary>
@@ -121,14 +122,23 @@ public static class IssueFindCommand
                     ct: ct);
 
                 var bodyJson = BuildBody(yql);
+                var ui = InteractiveUIResolver.Resolve(ctx.EffectiveOutputFormat);
+
+                // Status закрывается ДО начала записи в stdout, чтобы stderr live-region
+                // не перемешивался с выводом данных. Под Status делаем только первый
+                // network-roundtrip; остальные страницы и форматирование — без UI overlay.
+                var firstPage = await ui.Status(
+                    "Загружаем задачи...",
+                    _ => FetchFirstPageAsync(ctx.Client, bodyJson, perPage, ct),
+                    ct);
 
                 if (stream)
                 {
-                    await StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, ct);
+                    await StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, firstPage, ct);
                 }
                 else
                 {
-                    await WriteAggregatedAsync(ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, ct);
+                    await WriteAggregatedAsync(ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, firstPage, ct);
                 }
 
                 return 0;
@@ -162,6 +172,24 @@ public static class IssueFindCommand
     }
 
     /// <summary>
+    /// Делает первый запрос постраничного обхода. Используется для того, чтобы
+    /// под Spectre <c>Status</c>-оверлеем выполнялся только первый roundtrip:
+    /// дальнейшие страницы и форматирование вывода в stdout идут уже без UI.
+    /// </summary>
+    private static async Task<FirstPage> FetchFirstPageAsync(
+        TrackerClient client,
+        string bodyJson,
+        int perPage,
+        CancellationToken ct)
+    {
+        var path = $"issues/_search?perPage={perPage}&page=1";
+        var (payload, totalPages) = await client.PostJsonRawWithHeadersAsync(path, bodyJson, ct);
+        // JsonElement держит ссылку на JsonDocument родителя; клонируем чтобы payload
+        // оставался валидным после выхода из using-области внутри клиента.
+        return new FirstPage(payload.Clone(), totalPages);
+    }
+
+    /// <summary>
     /// Собирает все страницы результата в единый JSON-массив, затем рендерит через
     /// <see cref="JsonWriter.Write"/> в указанном формате (json/minimal/table).
     /// Ограничивается <paramref name="max"/> записями.
@@ -172,6 +200,7 @@ public static class IssueFindCommand
         int perPage,
         int max,
         OutputFormat format,
+        FirstPage firstPage,
         CancellationToken ct)
     {
         var pretty = !Console.IsOutputRedirected;
@@ -180,10 +209,11 @@ public static class IssueFindCommand
         {
             w.WriteStartArray();
             var count = 0;
-            await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, ct))
+            await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, ct))
             {
                 el.WriteTo(w);
-                if (++count >= max)
+                count++;
+                if (count >= max)
                 {
                     break;
                 }
@@ -203,10 +233,11 @@ public static class IssueFindCommand
         string bodyJson,
         int perPage,
         int max,
+        FirstPage firstPage,
         CancellationToken ct)
     {
         var count = 0;
-        await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, ct))
+        await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, ct))
         {
             using var ms = new MemoryStream();
             await using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -225,21 +256,47 @@ public static class IssueFindCommand
     /// <summary>
     /// Итерирует результат <c>POST /issues/_search</c> постранично через
     /// <see cref="TrackerClient.PostJsonRawWithHeadersAsync"/>, читая
-    /// заголовок <c>X-Total-Pages</c> для остановки.
+    /// заголовок <c>X-Total-Pages</c> для остановки. Принимает уже полученную
+    /// первую страницу, чтобы не делать лишний запрос.
     /// </summary>
     private static async IAsyncEnumerable<JsonElement> SearchPagedAsync(
         TrackerClient client,
         string bodyJson,
         int perPage,
         int max,
+        FirstPage firstPage,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var page = 1;
         var emitted = 0;
+
+        // Первая страница уже получена снаружи (под Status-оверлеем).
+        if (firstPage.Payload.ValueKind != JsonValueKind.Array)
+        {
+            yield return firstPage.Payload;
+            yield break;
+        }
+
+        foreach (var item in firstPage.Payload.EnumerateArray())
+        {
+            yield return item;
+            emitted++;
+            if (emitted >= max)
+            {
+                yield break;
+            }
+        }
+
+        var totalPages = firstPage.TotalPages;
+        if (totalPages <= 1)
+        {
+            yield break;
+        }
+
+        var page = 2;
         while (true)
         {
             var path = $"issues/_search?perPage={perPage}&page={page}";
-            var (payload, totalPages) = await client.PostJsonRawWithHeadersAsync(path, bodyJson, ct);
+            var (payload, currentTotal) = await client.PostJsonRawWithHeadersAsync(path, bodyJson, ct);
 
             if (payload.ValueKind != JsonValueKind.Array)
             {
@@ -257,7 +314,7 @@ public static class IssueFindCommand
                 }
             }
 
-            if (page >= totalPages)
+            if (page >= currentTotal)
             {
                 yield break;
             }
@@ -265,4 +322,10 @@ public static class IssueFindCommand
             page++;
         }
     }
+
+    /// <summary>
+    /// Результат первого пагинированного запроса: распарсенный payload и общее
+    /// число страниц из заголовка ответа.
+    /// </summary>
+    private readonly record struct FirstPage(JsonElement Payload, int TotalPages);
 }
