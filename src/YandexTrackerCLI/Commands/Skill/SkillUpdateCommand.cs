@@ -90,7 +90,7 @@ public static class SkillUpdateCommand
             })
             .Start(ctx =>
             {
-                var progress = new Progress<SkillProgressEvent>(evt =>
+                var progress = new SyncProgress<SkillProgressEvent>(evt =>
                 {
                     var key = (evt.Target, evt.Scope);
                     switch (evt.Kind)

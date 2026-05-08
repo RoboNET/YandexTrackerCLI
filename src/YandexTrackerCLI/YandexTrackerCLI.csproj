@@ -4,6 +4,7 @@
     <AssemblyName>yt</AssemblyName>
     <RootNamespace>YandexTrackerCLI</RootNamespace>
     <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
     <InvariantGlobalization>true</InvariantGlobalization>
     <IlcOptimizationPreference>Size</IlcOptimizationPreference>
     <StripSymbols>true</StripSymbols>

@@ -383,7 +383,7 @@ public static class AuthLoginCommand
 
             var result = await ui.Status("Federated SSO login", async statusCtx =>
             {
-                var phaseReporter = new Progress<FederatedPhase>(p =>
+                var phaseReporter = new SyncProgress<FederatedPhase>(p =>
                 {
                     var label = p.Kind switch
                     {

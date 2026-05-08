@@ -185,7 +185,9 @@ public static class SkillAutoCheck
     {
         // Если задан TestPromptReader — идём по legacy-пути с Console.ReadLine-парсером.
         // В production (TestPromptReader == null) и не-redirected stderr — используем Spectre.
-        var useSpectre = TestPromptReader.Value is null && !Console.IsErrorRedirected;
+        var useSpectre = TestPromptReader.Value is null
+            && !Console.IsErrorRedirected
+            && !Console.IsInputRedirected;
         if (useSpectre)
         {
             HandleInteractiveSpectre(state, status, projectDir);
@@ -284,9 +286,9 @@ public static class SkillAutoCheck
             {
                 table.AddRow(
                     LocLabel(i),
-                    i.Path,
-                    $"[red]{i.Version}[/]",
-                    $"[green]{status.CurrentVersion}[/]");
+                    Markup.Escape(i.Path),
+                    $"[red]{Markup.Escape(i.Version)}[/]",
+                    $"[green]{Markup.Escape(status.CurrentVersion)}[/]");
             }
             ansi.Write(table);
         }

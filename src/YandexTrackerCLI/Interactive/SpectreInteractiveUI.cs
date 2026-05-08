@@ -43,6 +43,7 @@ public sealed class SpectreInteractiveUI : IInteractiveUI
         ArgumentNullException.ThrowIfNull(work);
         return _ansi.Status().StartAsync(label, async ctx =>
         {
+            ct.ThrowIfCancellationRequested();
             var wrapper = new SpectreStatusContext(ctx);
             return await work(wrapper).ConfigureAwait(false);
         });
@@ -54,6 +55,7 @@ public sealed class SpectreInteractiveUI : IInteractiveUI
         ArgumentNullException.ThrowIfNull(work);
         return _ansi.Status().StartAsync(label, async ctx =>
         {
+            ct.ThrowIfCancellationRequested();
             var wrapper = new SpectreStatusContext(ctx);
             await work(wrapper).ConfigureAwait(false);
         });
