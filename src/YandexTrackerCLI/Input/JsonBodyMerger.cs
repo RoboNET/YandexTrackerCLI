@@ -31,7 +31,11 @@ public static class JsonBodyMerger
         }
 
         /// <summary>Создаёт строковое override-значение.</summary>
-        public static OverrideValue Of(string s) => new(Kind.String, s, default, default);
+        public static OverrideValue Of(string s)
+        {
+            ArgumentNullException.ThrowIfNull(s);
+            return new(Kind.String, s, default, default);
+        }
 
         /// <summary>Создаёт булевское override-значение.</summary>
         public static OverrideValue Of(bool b)   => new(Kind.Bool,   null, b, default);
@@ -84,26 +88,41 @@ public static class JsonBodyMerger
 
             if (!string.IsNullOrWhiteSpace(rawJson))
             {
-                using var doc = JsonDocument.Parse(rawJson);
-                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                JsonDocument doc;
+                try
+                {
+                    doc = JsonDocument.Parse(rawJson);
+                }
+                catch (JsonException ex)
                 {
                     throw new TrackerException(
                         ErrorCode.InvalidArgs,
-                        "JSON body must be an object to merge inline overrides.");
+                        "Invalid JSON in request body: " + ex.Message,
+                        inner: ex);
                 }
 
-                foreach (var prop in doc.RootElement.EnumerateObject())
+                using (doc)
                 {
-                    if (ovIndex.TryGetValue(prop.Name, out var ov))
+                    if (doc.RootElement.ValueKind != JsonValueKind.Object)
                     {
-                        ov.Write(w, prop.Name);
+                        throw new TrackerException(
+                            ErrorCode.InvalidArgs,
+                            "JSON body must be an object to merge inline overrides.");
                     }
-                    else
+
+                    foreach (var prop in doc.RootElement.EnumerateObject())
                     {
-                        w.WritePropertyName(prop.Name);
-                        prop.Value.WriteTo(w);
+                        if (ovIndex.TryGetValue(prop.Name, out var ov))
+                        {
+                            ov.Write(w, prop.Name);
+                        }
+                        else
+                        {
+                            w.WritePropertyName(prop.Name);
+                            prop.Value.WriteTo(w);
+                        }
+                        written.Add(prop.Name);
                     }
-                    written.Add(prop.Name);
                 }
             }
 

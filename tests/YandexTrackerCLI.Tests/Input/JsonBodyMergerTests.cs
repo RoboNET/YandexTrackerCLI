@@ -99,6 +99,39 @@ public sealed class JsonBodyMergerTests
     }
 
     [Test]
+    public async Task Merge_InvalidJsonRaw_ThrowsInvalidArgs()
+    {
+        Core.Api.Errors.TrackerException? caught = null;
+        try
+        {
+            Merge("not json", Array.Empty<(string, OverrideValue)>());
+        }
+        catch (Core.Api.Errors.TrackerException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Code).IsEqualTo(Core.Api.Errors.ErrorCode.InvalidArgs);
+    }
+
+    [Test]
+    public async Task OverrideValueOf_NullString_Throws()
+    {
+        ArgumentNullException? caught = null;
+        try
+        {
+            OverrideValue.Of((string)null!);
+        }
+        catch (ArgumentNullException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+    }
+
+    [Test]
     public async Task Merge_DuplicateOverrideKey_LastWins()
     {
         var ov = new (string, OverrideValue)[]
