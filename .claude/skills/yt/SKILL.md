@@ -60,6 +60,18 @@ yt issue get TECH-146 | jq '{key,summary,status:.status.display,assignee:.assign
 
 В ответе ключевые поля: `key`, `summary`, `description` (markdown), `status.display`, `type.display`, `priority.display`, `assignee.display`, `createdBy.display`, `createdAt`, `updatedAt`, `tags`, `queue.display`, `boards`.
 
+### Интерактивный поиск (suggest)
+
+```bash
+yt suggest                          # пустой ввод, начать набирать
+yt suggest "fix"                    # с pre-filled буфером
+yt suggest --queue TECH "login"     # ограничить очередью
+yt suggest --limit 5                # показать максимум 5 результатов
+yt issue get $(yt suggest)          # композиция: pick → get
+```
+
+Интерактивный TTY-only fuzzy-поиск через `GET /v3/issues/_suggest`. Стрелки `↑↓` навигация, `Enter` — печатает выбранный `key` в stdout, `Esc` — выход с кодом 130. Если stdout/stdin перенаправлены — exit 2 (`invalid_args`); для скриптов используйте `yt issue find`.
+
 ### Комментарии и ворклоги
 
 ```bash

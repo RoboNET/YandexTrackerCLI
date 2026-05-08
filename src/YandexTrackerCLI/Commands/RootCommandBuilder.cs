@@ -159,6 +159,7 @@ public static class RootCommandBuilder
         root.Subcommands.Add(Field.FieldCommandBuilder.Build());
         root.Subcommands.Add(Ref.RefCommandBuilder.Build());
         root.Subcommands.Add(Skill.SkillCommandBuilder.Build());
+        root.Subcommands.Add(Suggest.SuggestCommand.Build());
 
         return root;
     }
