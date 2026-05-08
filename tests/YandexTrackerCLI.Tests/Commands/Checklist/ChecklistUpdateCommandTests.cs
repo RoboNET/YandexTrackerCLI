@@ -90,6 +90,41 @@ public sealed class ChecklistUpdateCommandTests
             sw,
             er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("raw-text");
+        await Assert.That(doc.RootElement.GetProperty("assignee").GetString()).IsEqualTo("bob");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + scalar inline <c>--text</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task ChecklistUpdate_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "cl-upd-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"text":"old","assignee":"bob"}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"id":"i1"}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "checklist", "update", "DEV-1", "i1", "--json-file", path, "--text", "new" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("assignee").GetString()).IsEqualTo("bob");
     }
 }
