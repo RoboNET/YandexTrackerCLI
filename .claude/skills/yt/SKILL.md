@@ -120,6 +120,27 @@ yt board list               # доски
 yt field list --queue TECH  # поля очереди
 ```
 
+### Автоматизации
+
+`yt automation <kind> <op>` — работа с триггерами, автодействиями и макросами очереди (per-queue CRUD + activate/deactivate, кроме макросов).
+
+```bash
+yt automation trigger    list   --queue TECH
+yt automation trigger    get    <id> --queue TECH
+yt automation trigger    create --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
+yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
+yt automation trigger    delete <id> --queue TECH
+yt automation trigger    activate   <id> --queue TECH
+yt automation trigger    deactivate <id> --queue TECH
+
+yt automation autoaction <list|get|create|update|delete|activate|deactivate>   # те же опции
+yt automation macro      <list|get|create|update|delete>                       # без activate/deactivate
+```
+
+Inline-флаги (`--name`, `--active`, `--inactive`) **сливаются** поверх содержимого `--json-file`/`--json-stdin` на верхнем уровне body. Удобно для шаблонов: один JSON-файл — разные `--name` / `--active` per call.
+
+То же merge-поведение применяется во всех командах с `--json-file`/`--json-stdin` (`issue create`, `issue update`, `comment add`, `worklog add`, `component create`, `version create`, …): typed-флаги больше не взаимоисключающиеся с raw-JSON, а перекрывают поля верхнего уровня. Для вложенных полей (например, `lead.id`) inline-флаги игнорируются — нужен raw-JSON.
+
 ## Авторизация
 
 Если `yt user me` возвращает auth_failed (exit 4) — нужен логин:

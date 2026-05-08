@@ -10,21 +10,11 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt version create</c>: создаёт версию через <c>POST /v3/versions</c>.
-/// Поддерживает два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — требуются <c>--queue</c> и <c>--name</c>; опционально
-///     <c>--description</c>, <c>--start-date</c>, <c>--due-date</c>, <c>--released</c>.
-///     Тело собирается через <see cref="Utf8JsonWriter"/>, <c>queue</c> оборачивается
-///     в объект <c>{"key":...}</c>. Даты валидируются как ISO 8601
-///     (<see cref="DateTimeOffset.TryParse(string, IFormatProvider, DateTimeStyles, out DateTimeOffset)"/>).
-///   </description></item>
-///   <item><description>
-///     <b>Raw</b> — <c>--json-file</c>/<c>--json-stdin</c>, тело уходит без изменений.
-///   </description></item>
-/// </list>
-/// Режимы взаимоисключающи: одновременное указание typed-флага и raw-источника
-/// приводит к ошибке <see cref="ErrorCode.InvalidArgs"/>.
+/// Тело собирается через <see cref="JsonBodyReader.ReadAndMerge"/>: scalar-флаги
+/// (<c>--name</c>, <c>--description</c>, <c>--start-date</c>, <c>--due-date</c>,
+/// <c>--released</c>) мерджатся поверх raw-payload. Nested-флаг <c>--queue</c>
+/// синтезирует базовый объект <c>{"queue":{"key":...}}</c> и не сочетается
+/// с <c>--json-file</c>/<c>--json-stdin</c>.
 /// </summary>
 public static class VersionCreateCommand
 {
@@ -36,36 +26,15 @@ public static class VersionCreateCommand
     {
         var queueOpt = new Option<string?>("--queue")
         {
-            Description = "Ключ очереди (typed-режим, обязателен с --name).",
+            Description = "Ключ очереди (синтезирует {\"queue\":{\"key\":...}}; не сочетается с --json-*).",
         };
-        var nameOpt = new Option<string?>("--name")
-        {
-            Description = "Название версии (typed-режим, обязателен с --queue).",
-        };
-        var descriptionOpt = new Option<string?>("--description")
-        {
-            Description = "Описание версии (typed-режим, опционально).",
-        };
-        var startDateOpt = new Option<string?>("--start-date")
-        {
-            Description = "Дата начала в формате ISO 8601 (typed-режим, опционально).",
-        };
-        var dueDateOpt = new Option<string?>("--due-date")
-        {
-            Description = "Дата завершения в формате ISO 8601 (typed-режим, опционально).",
-        };
-        var releasedOpt = new Option<bool?>("--released")
-        {
-            Description = "Флаг \"версия выпущена\" (typed-режим, опционально).",
-        };
-        var jsonFileOpt = new Option<string?>("--json-file")
-        {
-            Description = "Путь к JSON-файлу с телом запроса (raw-режим).",
-        };
-        var jsonStdinOpt = new Option<bool>("--json-stdin")
-        {
-            Description = "Читать JSON-тело из stdin (raw-режим, альтернатива --json-file).",
-        };
+        var nameOpt = new Option<string?>("--name") { Description = "Название версии (override поля name)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Описание (override поля description)." };
+        var startDateOpt = new Option<string?>("--start-date") { Description = "Дата начала ISO 8601 (override поля startDate)." };
+        var dueDateOpt = new Option<string?>("--due-date") { Description = "Дата завершения ISO 8601 (override поля dueDate)." };
+        var releasedOpt = new Option<bool?>("--released") { Description = "Флаг released (override поля released)." };
+        var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
+        var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
         var cmd = new Command("create", "Создать версию (POST /v3/versions).");
         cmd.Options.Add(queueOpt);
@@ -90,40 +59,66 @@ public static class VersionCreateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(queue)
-                    || !string.IsNullOrWhiteSpace(name)
-                    || !string.IsNullOrWhiteSpace(description)
-                    || !string.IsNullOrWhiteSpace(startDate)
-                    || !string.IsNullOrWhiteSpace(dueDate)
-                    || released.HasValue;
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
+                var hasNestedTyped = !string.IsNullOrWhiteSpace(queue);
+                var hasRawSource = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
 
-                if (hasTyped && hasRaw)
+                if (hasNestedTyped && hasRawSource)
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "version create: typed flags and --json-file/--json-stdin are mutually exclusive.");
+                    throw new TrackerException(ErrorCode.InvalidArgs,
+                        "version create: --queue cannot be combined with --json-file/--json-stdin.");
                 }
 
-                string body;
-                if (hasRaw)
+                if (!string.IsNullOrWhiteSpace(startDate))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "version create: --json-file/--json-stdin produced no content.");
+                    VersionDateValidator.ValidateIsoDate(startDate!, "--start-date");
                 }
-                else
+                if (!string.IsNullOrWhiteSpace(dueDate))
                 {
-                    if (string.IsNullOrWhiteSpace(queue) || string.IsNullOrWhiteSpace(name))
+                    VersionDateValidator.ValidateIsoDate(dueDate!, "--due-date");
+                }
+
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    overrides.Add(("name", JsonBodyMerger.OverrideValue.Of(name!)));
+                }
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
+                }
+                if (!string.IsNullOrWhiteSpace(startDate))
+                {
+                    overrides.Add(("startDate", JsonBodyMerger.OverrideValue.Of(startDate!)));
+                }
+                if (!string.IsNullOrWhiteSpace(dueDate))
+                {
+                    overrides.Add(("dueDate", JsonBodyMerger.OverrideValue.Of(dueDate!)));
+                }
+                if (released.HasValue)
+                {
+                    overrides.Add(("released", JsonBodyMerger.OverrideValue.Of(released.Value)));
+                }
+
+                var rawSource = hasRawSource
+                    ? JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
+                    : BuildNestedTypedBase(queue);
+
+                var body = JsonBodyMerger.Merge(rawSource, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
+                        "version create: provide --json-file/--json-stdin or typed flags.");
+
+                using (var doc = JsonDocument.Parse(body))
+                {
+                    if (!doc.RootElement.TryGetProperty("queue", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "version create: --queue and --name are required in typed mode (or use --json-file/--json-stdin).");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'queue'.");
                     }
-
-                    body = BuildTypedBody(queue, name, description, startDate, dueDate, released);
+                    if (!doc.RootElement.TryGetProperty("name", out _))
+                    {
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'name'.");
+                    }
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -150,61 +145,27 @@ public static class VersionCreateCommand
     }
 
     /// <summary>
-    /// Формирует JSON-тело запроса из typed-флагов. <c>queue</c> оборачивается в
-    /// объект <c>{"key":...}</c>. Поля <c>startDate</c>/<c>dueDate</c> валидируются
-    /// как ISO 8601 перед записью.
+    /// Синтезирует базовый JSON-объект из <c>--queue</c>:
+    /// <c>{"queue":{"key":...}}</c>. Возвращает <c>null</c>, если флаг не задан.
     /// </summary>
-    /// <param name="queue">Ключ очереди.</param>
-    /// <param name="name">Название версии.</param>
-    /// <param name="description">Описание (опционально).</param>
-    /// <param name="startDate">Дата начала, ISO 8601 (опционально).</param>
-    /// <param name="dueDate">Дата завершения, ISO 8601 (опционально).</param>
-    /// <param name="released">Флаг "выпущена" (опционально).</param>
-    /// <returns>Сериализованное JSON-тело.</returns>
-    /// <exception cref="TrackerException">
-    /// Бросается с <see cref="ErrorCode.InvalidArgs"/>, если даты не парсятся как ISO 8601.
-    /// </exception>
-    private static string BuildTypedBody(
-        string queue,
-        string name,
-        string? description,
-        string? startDate,
-        string? dueDate,
-        bool? released)
+    /// <param name="queue">Значение опции <c>--queue</c>.</param>
+    /// <returns>Сериализованный JSON-объект либо <c>null</c>.</returns>
+    private static string? BuildNestedTypedBase(string? queue)
     {
+        if (string.IsNullOrWhiteSpace(queue))
+        {
+            return null;
+        }
+
         using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
         {
             w.WriteStartObject();
             w.WriteStartObject("queue");
             w.WriteString("key", queue);
             w.WriteEndObject();
-            w.WriteString("name", name);
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                w.WriteString("description", description);
-            }
-
-            if (!string.IsNullOrWhiteSpace(startDate))
-            {
-                VersionDateValidator.ValidateIsoDate(startDate, "--start-date");
-                w.WriteString("startDate", startDate);
-            }
-
-            if (!string.IsNullOrWhiteSpace(dueDate))
-            {
-                VersionDateValidator.ValidateIsoDate(dueDate, "--due-date");
-                w.WriteString("dueDate", dueDate);
-            }
-
-            if (released.HasValue)
-            {
-                w.WriteBoolean("released", released.Value);
-            }
-
             w.WriteEndObject();
         }
-
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

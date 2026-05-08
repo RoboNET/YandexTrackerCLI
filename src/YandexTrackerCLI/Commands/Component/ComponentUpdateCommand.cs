@@ -9,9 +9,12 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt component update &lt;id&gt;</c>: обновляет компонент через
-/// <c>PATCH /v3/components/{id}</c>. Поддерживает typed-режим (все поля опциональны —
-/// <c>--name</c>, <c>--description</c>, <c>--lead</c>, <c>--assign-auto</c>) и raw-режим
-/// (<c>--json-file</c>/<c>--json-stdin</c>). Хотя бы один источник данных обязателен.
+/// <c>PATCH /v3/components/{id}</c>. Тело собирается через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar-флаги
+/// (<c>--name</c>, <c>--description</c>, <c>--assign-auto</c>) мерджатся
+/// поверх raw-payload. Nested-флаг <c>--lead</c> поддерживается только при
+/// отсутствии raw-источника и собирает синтетический base-payload с обёрткой
+/// <c>{"login":...}</c>.
 /// </summary>
 public static class ComponentUpdateCommand
 {
@@ -22,30 +25,15 @@ public static class ComponentUpdateCommand
     public static Command Build()
     {
         var idArg = new Argument<string>("id") { Description = "Идентификатор компонента." };
-        var nameOpt = new Option<string?>("--name")
-        {
-            Description = "Новое название компонента (typed-режим, опционально).",
-        };
-        var descriptionOpt = new Option<string?>("--description")
-        {
-            Description = "Новое описание компонента (typed-режим, опционально).",
-        };
+        var nameOpt = new Option<string?>("--name") { Description = "Новое название (override поля name)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Новое описание (override поля description)." };
         var leadOpt = new Option<string?>("--lead")
         {
-            Description = "Логин нового владельца (typed-режим, опционально).",
+            Description = "Логин нового владельца (синтезирует {\"lead\":{\"login\":...}}; не сочетается с --json-*).",
         };
-        var assignAutoOpt = new Option<bool>("--assign-auto")
-        {
-            Description = "Установить флаг автоназначения (typed-режим, опционально).",
-        };
-        var jsonFileOpt = new Option<string?>("--json-file")
-        {
-            Description = "Путь к JSON-файлу с телом запроса (raw-режим).",
-        };
-        var jsonStdinOpt = new Option<bool>("--json-stdin")
-        {
-            Description = "Читать JSON-тело из stdin (raw-режим, альтернатива --json-file).",
-        };
+        var assignAutoOpt = new Option<bool>("--assign-auto") { Description = "Установить assignAuto=true (override)." };
+        var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
+        var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
         var cmd = new Command("update", "Обновить компонент (PATCH /v3/components/{id}).");
         cmd.Arguments.Add(idArg);
@@ -68,38 +56,36 @@ public static class ComponentUpdateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(name)
-                    || !string.IsNullOrWhiteSpace(description)
-                    || !string.IsNullOrWhiteSpace(lead)
-                    || assignAuto;
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
+                var hasNestedTyped = !string.IsNullOrWhiteSpace(lead);
+                var hasRawSource = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
 
-                if (hasTyped && hasRaw)
+                if (hasNestedTyped && hasRawSource)
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "component update: typed flags and --json-file/--json-stdin are mutually exclusive.");
+                    throw new TrackerException(ErrorCode.InvalidArgs,
+                        "component update: --lead cannot be combined with --json-file/--json-stdin (use a JSON object instead).");
                 }
 
-                string body;
-                if (hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "component update: --json-file/--json-stdin produced no content.");
+                    overrides.Add(("name", JsonBodyMerger.OverrideValue.Of(name!)));
                 }
-                else if (hasTyped)
+                if (!string.IsNullOrWhiteSpace(description))
                 {
-                    body = BuildTypedBody(name, description, lead, assignAuto);
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
                 }
-                else
+                if (assignAuto)
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("assignAuto", JsonBodyMerger.OverrideValue.Of(true)));
+                }
+
+                var rawSource = hasRawSource
+                    ? JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
+                    : BuildNestedTypedBase(lead);
+
+                var body = JsonBodyMerger.Merge(rawSource, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "component update: nothing to update (provide typed flags or --json-file/--json-stdin).");
-                }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -128,49 +114,27 @@ public static class ComponentUpdateCommand
     }
 
     /// <summary>
-    /// Формирует JSON-тело PATCH-запроса из typed-флагов. Пишет только те поля,
-    /// которые фактически заданы. <c>lead</c> оборачивается в объект <c>{"login":...}</c>.
+    /// Синтезирует базовый JSON-объект из nested-typed-флага <c>--lead</c>:
+    /// <c>{"lead":{"login":...}}</c>. Возвращает <c>null</c>, если флаг не задан.
     /// </summary>
-    /// <param name="name">Новое название (опционально).</param>
-    /// <param name="description">Новое описание (опционально).</param>
-    /// <param name="lead">Логин нового владельца (опционально).</param>
-    /// <param name="assignAuto">Флаг автоназначения (пишется только если <c>true</c>).</param>
-    /// <returns>Сериализованное JSON-тело.</returns>
-    private static string BuildTypedBody(
-        string? name,
-        string? description,
-        string? lead,
-        bool assignAuto)
+    /// <param name="lead">Значение опции <c>--lead</c>.</param>
+    /// <returns>Сериализованный JSON-объект либо <c>null</c>.</returns>
+    private static string? BuildNestedTypedBase(string? lead)
     {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
+        if (string.IsNullOrWhiteSpace(lead))
         {
-            w.WriteStartObject();
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                w.WriteString("name", name);
-            }
-
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                w.WriteString("description", description);
-            }
-
-            if (!string.IsNullOrWhiteSpace(lead))
-            {
-                w.WriteStartObject("lead");
-                w.WriteString("login", lead);
-                w.WriteEndObject();
-            }
-
-            if (assignAuto)
-            {
-                w.WriteBoolean("assignAuto", true);
-            }
-
-            w.WriteEndObject();
+            return null;
         }
 
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
+        {
+            w.WriteStartObject();
+            w.WriteStartObject("lead");
+            w.WriteString("login", lead);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

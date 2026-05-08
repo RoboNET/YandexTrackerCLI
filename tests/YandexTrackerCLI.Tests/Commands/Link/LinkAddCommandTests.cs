@@ -121,7 +121,42 @@ public sealed class LinkAddCommandTests
             sw,
             er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("relationship").GetString()).IsEqualTo("relates");
+        await Assert.That(doc.RootElement.GetProperty("issue").GetString()).IsEqualTo("DEV-9");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> с base + inline <c>--to</c>/<c>--type</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task Add_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "link-add-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"relationship":"relates","issue":"DEV-9"}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("""{"id":7}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "link", "add", "DEV-1", "--json-file", path, "--to", "DEV-77", "--type", "depends-on" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("relationship").GetString()).IsEqualTo("depends-on");
+        await Assert.That(doc.RootElement.GetProperty("issue").GetString()).IsEqualTo("DEV-77");
     }
 
     /// <summary>

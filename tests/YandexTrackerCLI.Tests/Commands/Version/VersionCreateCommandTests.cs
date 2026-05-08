@@ -144,7 +144,45 @@ public sealed class VersionCreateCommandTests
             er);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetProperty("key").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("Raw");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + scalar inline <c>--name</c>/<c>--released</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task Create_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var path = Path.Combine(Path.GetTempPath(), "version-create-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"queue":{"key":"DEV"},"name":"old","released":false}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("""{"id":42}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "version", "create", "--json-file", path, "--name", "new", "--released", "true" },
+            sw, er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetProperty("key").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("released").GetBoolean()).IsTrue();
     }
 
     /// <summary>
@@ -180,11 +218,10 @@ public sealed class VersionCreateCommandTests
     }
 
     /// <summary>
-    /// Typed-флаг + <c>--json-file</c> одновременно → exit 2, stderr содержит
-    /// <c>error.code == "invalid_args"</c>, HTTP не вызывается.
+    /// Nested-typed (<c>--queue</c>) + <c>--json-file</c> одновременно → exit 2.
     /// </summary>
     [Test]
-    public async Task Create_TypedAndRawTogether_Exit2()
+    public async Task Create_NestedTypedAndRawTogether_Exit2()
     {
         using var env = new TestEnv();
         env.SetConfig(TestEnv.MinimalOAuthConfig);
@@ -197,7 +234,7 @@ public sealed class VersionCreateCommandTests
         var sw = new StringWriter();
         var er = new StringWriter();
         var exit = await env.Invoke(
-            new[] { "version", "create", "--name", "X", "--json-file", path },
+            new[] { "version", "create", "--queue", "DEV", "--json-file", path },
             sw,
             er);
 

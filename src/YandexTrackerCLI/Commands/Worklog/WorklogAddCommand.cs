@@ -2,7 +2,6 @@ namespace YandexTrackerCLI.Commands.Worklog;
 
 using System.CommandLine;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Xml;
 using Core.Api.Errors;
@@ -11,18 +10,12 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt worklog add &lt;issue-key&gt;</c>: добавляет запись учёта времени
-/// (<c>POST /v3/issues/{key}/worklog</c>). Поддерживает два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через <c>--duration PT1H</c> (обязательный), плюс опционально
-///     <c>--comment</c> и <c>--start &lt;ISO8601&gt;</c>. В теле запроса формируется
-///     объект <c>{"duration":"...","comment":"...","start":"..."}</c>.
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-опциями).
-///   </description></item>
-/// </list>
+/// (<c>POST /v3/issues/{key}/worklog</c>). Тело собирается из источника
+/// (<c>--json-file</c>/<c>--json-stdin</c>) и inline-флагов
+/// (<c>--duration</c>, <c>--comment</c>, <c>--start</c>) через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: inline-override побеждает
+/// одноимённое поле в raw-payload. Эффективное тело должно содержать
+/// поле <c>duration</c>.
 /// </summary>
 public static class WorklogAddCommand
 {
@@ -64,47 +57,40 @@ public static class WorklogAddCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped = !string.IsNullOrWhiteSpace(duration)
-                    || !string.IsNullOrWhiteSpace(comment)
-                    || !string.IsNullOrWhiteSpace(start);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                if (!string.IsNullOrWhiteSpace(duration))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --duration/--comment/--start with --json-file/--json-stdin.");
+                    ValidateIso8601Duration(duration!);
+                }
+                if (!string.IsNullOrWhiteSpace(start))
+                {
+                    ValidateIso8601DateTime(start!);
                 }
 
-                if (!hasTyped && !hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(duration))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("duration", JsonBodyMerger.OverrideValue.Of(duration!)));
+                }
+                if (!string.IsNullOrWhiteSpace(comment))
+                {
+                    overrides.Add(("comment", JsonBodyMerger.OverrideValue.Of(comment!)));
+                }
+                if (!string.IsNullOrWhiteSpace(start))
+                {
+                    overrides.Add(("start", JsonBodyMerger.OverrideValue.Of(start!)));
+                }
+
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Provide --duration (optionally --comment/--start) or --json-file/--json-stdin.");
-                }
 
-                string body;
-                if (hasRaw)
+                using (var doc = JsonDocument.Parse(body))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (string.IsNullOrWhiteSpace(duration))
+                    if (!doc.RootElement.TryGetProperty("duration", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "--duration is required in typed mode.");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'duration'.");
                     }
-
-                    ValidateIso8601Duration(duration);
-                    if (!string.IsNullOrWhiteSpace(start))
-                    {
-                        ValidateIso8601DateTime(start);
-                    }
-
-                    body = BuildTypedBody(duration, comment, start);
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -130,33 +116,6 @@ public static class WorklogAddCommand
             }
         });
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит минимальное JSON-тело запроса для типизированного режима.
-    /// </summary>
-    /// <param name="duration">ISO 8601 длительность (обязательно).</param>
-    /// <param name="comment">Опциональный комментарий.</param>
-    /// <param name="start">Опциональное ISO 8601 время начала.</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    private static string BuildTypedBody(string duration, string? comment, string? start)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteString("duration", duration);
-            if (!string.IsNullOrWhiteSpace(comment))
-            {
-                w.WriteString("comment", comment);
-            }
-            if (!string.IsNullOrWhiteSpace(start))
-            {
-                w.WriteString("start", start);
-            }
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     /// <summary>

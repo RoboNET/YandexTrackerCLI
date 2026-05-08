@@ -94,7 +94,43 @@ public sealed class VersionUpdateCommandTests
             er);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("Raw");
+        await Assert.That(doc.RootElement.GetProperty("description").GetString()).IsEqualTo("d");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + scalar inline <c>--name</c>/<c>--released</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task Update_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var path = Path.Combine(Path.GetTempPath(), "version-update-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"name":"old","released":false}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"id":42}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "version", "update", "42", "--json-file", path, "--name", "new", "--released", "true" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("released").GetBoolean()).IsTrue();
     }
 
     /// <summary>

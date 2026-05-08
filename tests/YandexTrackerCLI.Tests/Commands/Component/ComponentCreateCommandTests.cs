@@ -141,15 +141,53 @@ public sealed class ComponentCreateCommandTests
             er);
 
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetProperty("key").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("Raw");
     }
 
     /// <summary>
-    /// Typed-флаг + <c>--json-file</c> одновременно → exit 2, stderr содержит
-    /// <c>error.code == "invalid_args"</c>, HTTP не вызывается.
+    /// Merge: <c>--json-file</c> + scalar inline <c>--name</c>/<c>--description</c> => override побеждает.
     /// </summary>
     [Test]
-    public async Task Create_TypedAndRawTogether_Exit2()
+    public async Task Create_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var path = Path.Combine(Path.GetTempPath(), "component-create-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"queue":{"key":"DEV"},"name":"old","description":"old desc"}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent("""{"id":42}""", Encoding.UTF8, "application/json"),
+            };
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "component", "create", "--json-file", path, "--name", "new", "--assign-auto" },
+            sw, er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("queue").GetProperty("key").GetString()).IsEqualTo("DEV");
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("description").GetString()).IsEqualTo("old desc");
+        await Assert.That(doc.RootElement.GetProperty("assignAuto").GetBoolean()).IsTrue();
+    }
+
+    /// <summary>
+    /// Nested-typed (<c>--queue</c>) + raw одновременно → exit 2.
+    /// </summary>
+    [Test]
+    public async Task Create_NestedTypedAndRawTogether_Exit2()
     {
         using var env = new TestEnv();
         env.SetConfig(TestEnv.MinimalOAuthConfig);
@@ -162,7 +200,7 @@ public sealed class ComponentCreateCommandTests
         var sw = new StringWriter();
         var er = new StringWriter();
         var exit = await env.Invoke(
-            new[] { "component", "create", "--name", "X", "--json-file", path },
+            new[] { "component", "create", "--queue", "DEV", "--json-file", path },
             sw,
             er);
 

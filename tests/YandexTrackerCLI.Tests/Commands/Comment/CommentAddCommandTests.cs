@@ -54,10 +54,10 @@ public sealed class CommentAddCommandTests
     }
 
     /// <summary>
-    /// Raw-режим: содержимое <c>--json-file</c> уходит в тело запроса без трансформаций.
+    /// Raw-режим: содержимое <c>--json-file</c> уходит в тело запроса (после merge без override'ов).
     /// </summary>
     [Test]
-    public async Task CommentAdd_JsonFile_SendsContent_Verbatim()
+    public async Task CommentAdd_JsonFile_SendsContent()
     {
         using var env = new TestEnv();
         env.SetConfig(TestEnv.MinimalOAuthConfig);
@@ -79,7 +79,39 @@ public sealed class CommentAddCommandTests
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "comment", "add", "DEV-1", "--json-file", path }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("from file");
+        await Assert.That(doc.RootElement.GetProperty("attachments").GetArrayLength()).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> с base text + inline <c>--text</c> => inline override побеждает.
+    /// </summary>
+    [Test]
+    public async Task CommentAdd_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "comm-add-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"text":"old","attachments":["A"]}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.Created);
+            r.Content = new StringContent("""{"id":"44"}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "comment", "add", "DEV-1", "--json-file", path, "--text", "new" }, sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("text").GetString()).IsEqualTo("new");
+        await Assert.That(doc.RootElement.GetProperty("attachments").GetArrayLength()).IsEqualTo(1);
     }
 
     /// <summary>

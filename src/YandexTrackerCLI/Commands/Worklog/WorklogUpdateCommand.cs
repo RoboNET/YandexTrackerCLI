@@ -1,26 +1,16 @@
 namespace YandexTrackerCLI.Commands.Worklog;
 
 using System.CommandLine;
-using System.Text;
-using System.Text.Json;
 using Core.Api.Errors;
 using Input;
 using Output;
 
 /// <summary>
 /// Команда <c>yt worklog update &lt;issue-key&gt; &lt;worklog-id&gt;</c>: обновляет
-/// запись учёта времени (<c>PATCH /v3/issues/{key}/worklog/{id}</c>). Поддерживает
-/// два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через <c>--duration</c>, <c>--comment</c>, <c>--start</c>
-///     (все опциональны, но требуется хотя бы одно).
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-опциями).
-///   </description></item>
-/// </list>
+/// запись учёта времени (<c>PATCH /v3/issues/{key}/worklog/{id}</c>). Тело собирается
+/// из источника (<c>--json-file</c>/<c>--json-stdin</c>) и inline-флагов
+/// (<c>--duration</c>, <c>--comment</c>, <c>--start</c>) через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>.
 /// </summary>
 public static class WorklogUpdateCommand
 {
@@ -65,44 +55,32 @@ public static class WorklogUpdateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped = !string.IsNullOrWhiteSpace(duration)
-                    || !string.IsNullOrWhiteSpace(comment)
-                    || !string.IsNullOrWhiteSpace(start);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                if (!string.IsNullOrWhiteSpace(duration))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --duration/--comment/--start with --json-file/--json-stdin.");
+                    WorklogAddCommand.ValidateIso8601Duration(duration!);
+                }
+                if (!string.IsNullOrWhiteSpace(start))
+                {
+                    WorklogAddCommand.ValidateIso8601DateTime(start!);
                 }
 
-                if (!hasTyped && !hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(duration))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("duration", JsonBodyMerger.OverrideValue.Of(duration!)));
+                }
+                if (!string.IsNullOrWhiteSpace(comment))
+                {
+                    overrides.Add(("comment", JsonBodyMerger.OverrideValue.Of(comment!)));
+                }
+                if (!string.IsNullOrWhiteSpace(start))
+                {
+                    overrides.Add(("start", JsonBodyMerger.OverrideValue.Of(start!)));
+                }
+
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Provide at least one of --duration/--comment/--start or --json-file/--json-stdin.");
-                }
-
-                string body;
-                if (hasRaw)
-                {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (!string.IsNullOrWhiteSpace(duration))
-                    {
-                        WorklogAddCommand.ValidateIso8601Duration(duration);
-                    }
-                    if (!string.IsNullOrWhiteSpace(start))
-                    {
-                        WorklogAddCommand.ValidateIso8601DateTime(start);
-                    }
-
-                    body = BuildTypedBody(duration, comment, start);
-                }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -127,36 +105,5 @@ public static class WorklogUpdateCommand
             }
         });
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит JSON-тело запроса для типизированного update-режима, включая только
-    /// заданные (non-null, non-whitespace) поля.
-    /// </summary>
-    /// <param name="duration">Опциональная ISO 8601 длительность.</param>
-    /// <param name="comment">Опциональный комментарий.</param>
-    /// <param name="start">Опциональное ISO 8601 время начала.</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    private static string BuildTypedBody(string? duration, string? comment, string? start)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            if (!string.IsNullOrWhiteSpace(duration))
-            {
-                w.WriteString("duration", duration);
-            }
-            if (!string.IsNullOrWhiteSpace(comment))
-            {
-                w.WriteString("comment", comment);
-            }
-            if (!string.IsNullOrWhiteSpace(start))
-            {
-                w.WriteString("start", start);
-            }
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

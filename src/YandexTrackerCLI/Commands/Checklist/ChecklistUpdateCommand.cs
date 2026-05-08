@@ -1,26 +1,15 @@
 namespace YandexTrackerCLI.Commands.Checklist;
 
 using System.CommandLine;
-using System.Text;
-using System.Text.Json;
 using Core.Api.Errors;
 using Input;
 using Output;
 
 /// <summary>
 /// Команда <c>yt checklist update &lt;issue-key&gt; &lt;item-id&gt;</c>: обновляет пункт
-/// чек-листа (<c>PATCH /v3/issues/{key}/checklistItems/{itemId}</c>). Поддерживает два
-/// режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через <c>--text</c>, <c>--assignee</c>, <c>--deadline</c>
-///     (все опциональны, но требуется хотя бы одно).
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-опциями).
-///   </description></item>
-/// </list>
+/// чек-листа (<c>PATCH /v3/issues/{key}/checklistItems/{itemId}</c>). Тело собирается
+/// через <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаги
+/// (<c>--text</c>, <c>--assignee</c>, <c>--deadline</c>) мерджатся поверх raw-payload.
 /// </summary>
 public static class ChecklistUpdateCommand
 {
@@ -32,12 +21,9 @@ public static class ChecklistUpdateCommand
     {
         var keyArg = new Argument<string>("issue-key") { Description = "Ключ задачи (например DEV-1)." };
         var itemIdArg = new Argument<string>("item-id") { Description = "Идентификатор пункта чек-листа." };
-        var textOpt = new Option<string?>("--text") { Description = "Новый текст пункта." };
-        var assigneeOpt = new Option<string?>("--assignee") { Description = "Новый исполнитель пункта." };
-        var deadlineOpt = new Option<string?>("--deadline")
-        {
-            Description = "Новый дедлайн в формате ISO 8601.",
-        };
+        var textOpt = new Option<string?>("--text") { Description = "Новый текст пункта (override поля text)." };
+        var assigneeOpt = new Option<string?>("--assignee") { Description = "Новый исполнитель (override поля assignee)." };
+        var deadlineOpt = new Option<string?>("--deadline") { Description = "Новый дедлайн ISO 8601 (override поля deadline)." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
@@ -64,39 +50,28 @@ public static class ChecklistUpdateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped = !string.IsNullOrWhiteSpace(text)
-                    || !string.IsNullOrWhiteSpace(assignee)
-                    || !string.IsNullOrWhiteSpace(deadline);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                if (!string.IsNullOrWhiteSpace(deadline))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --text/--assignee/--deadline with --json-file/--json-stdin.");
+                    ChecklistAddItemCommand.ValidateIso8601DateTime(deadline!);
                 }
 
-                if (!hasTyped && !hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(text))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("text", JsonBodyMerger.OverrideValue.Of(text!)));
+                }
+                if (!string.IsNullOrWhiteSpace(assignee))
+                {
+                    overrides.Add(("assignee", JsonBodyMerger.OverrideValue.Of(assignee!)));
+                }
+                if (!string.IsNullOrWhiteSpace(deadline))
+                {
+                    overrides.Add(("deadline", JsonBodyMerger.OverrideValue.Of(deadline!)));
+                }
+
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Provide at least one of --text/--assignee/--deadline or --json-file/--json-stdin.");
-                }
-
-                string body;
-                if (hasRaw)
-                {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (!string.IsNullOrWhiteSpace(deadline))
-                    {
-                        ChecklistAddItemCommand.ValidateIso8601DateTime(deadline);
-                    }
-                    body = BuildTypedBody(text, assignee, deadline);
-                }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -121,36 +96,5 @@ public static class ChecklistUpdateCommand
             }
         });
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит JSON-тело запроса для типизированного update-режима, включая только заданные
-    /// (non-null, non-whitespace) поля.
-    /// </summary>
-    /// <param name="text">Опциональный новый текст.</param>
-    /// <param name="assignee">Опциональный новый исполнитель.</param>
-    /// <param name="deadline">Опциональный новый ISO 8601 дедлайн.</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    private static string BuildTypedBody(string? text, string? assignee, string? deadline)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                w.WriteString("text", text);
-            }
-            if (!string.IsNullOrWhiteSpace(assignee))
-            {
-                w.WriteString("assignee", assignee);
-            }
-            if (!string.IsNullOrWhiteSpace(deadline))
-            {
-                w.WriteString("deadline", deadline);
-            }
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

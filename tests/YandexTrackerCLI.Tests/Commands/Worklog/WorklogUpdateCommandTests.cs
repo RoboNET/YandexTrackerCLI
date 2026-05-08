@@ -86,6 +86,39 @@ public sealed class WorklogUpdateCommandTests
             sw,
             er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("duration").GetString()).IsEqualTo("PT3H");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + inline <c>--duration</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task WorklogUpdate_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "wl-upd-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"duration":"PT1H","comment":"old"}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":42}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "worklog", "update", "DEV-1", "42", "--json-file", path, "--duration", "PT2H" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("duration").GetString()).IsEqualTo("PT2H");
+        await Assert.That(doc.RootElement.GetProperty("comment").GetString()).IsEqualTo("old");
     }
 }

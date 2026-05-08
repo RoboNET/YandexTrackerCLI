@@ -9,20 +9,14 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt component create</c>: создаёт компонент через
-/// <c>POST /v3/components</c>. Поддерживает два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — требуются <c>--queue</c> и <c>--name</c>; опционально
-///     <c>--description</c>, <c>--lead</c>, <c>--assign-auto</c>. Тело собирается
-///     через <see cref="Utf8JsonWriter"/> с обёрткой полей <c>queue</c> и <c>lead</c>
-///     в объекты (<c>{"key":...}</c> и <c>{"login":...}</c>).
-///   </description></item>
-///   <item><description>
-///     <b>Raw</b> — <c>--json-file</c>/<c>--json-stdin</c>, тело уходит без изменений.
-///   </description></item>
-/// </list>
-/// Режимы взаимоисключающи: одновременное указание typed-флага и raw-источника
-/// приводит к ошибке <see cref="ErrorCode.InvalidArgs"/>.
+/// <c>POST /v3/components</c>. Тело собирается из источника
+/// (<c>--json-file</c>/<c>--json-stdin</c>) и inline-флагов через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar-флаги
+/// (<c>--name</c>, <c>--description</c>, <c>--assign-auto</c>) мерджатся
+/// поверх raw-payload. Nested-флаги (<c>--queue</c>, <c>--lead</c>)
+/// поддерживаются только при отсутствии raw-источника и собирают
+/// синтетический base-payload с обёртками <c>{"key":...}</c> и
+/// <c>{"login":...}</c>.
 /// </summary>
 public static class ComponentCreateCommand
 {
@@ -34,32 +28,17 @@ public static class ComponentCreateCommand
     {
         var queueOpt = new Option<string?>("--queue")
         {
-            Description = "Ключ очереди (typed-режим, обязателен с --name).",
+            Description = "Ключ очереди (синтезирует {\"queue\":{\"key\":...}}; не сочетается с --json-*).",
         };
-        var nameOpt = new Option<string?>("--name")
-        {
-            Description = "Название компонента (typed-режим, обязателен с --queue).",
-        };
-        var descriptionOpt = new Option<string?>("--description")
-        {
-            Description = "Описание компонента (typed-режим, опционально).",
-        };
+        var nameOpt = new Option<string?>("--name") { Description = "Название компонента (override поля name)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Описание (override поля description)." };
         var leadOpt = new Option<string?>("--lead")
         {
-            Description = "Логин владельца компонента (typed-режим, опционально).",
+            Description = "Логин владельца (синтезирует {\"lead\":{\"login\":...}}; не сочетается с --json-*).",
         };
-        var assignAutoOpt = new Option<bool>("--assign-auto")
-        {
-            Description = "Автоматически назначать задачи владельцу (typed-режим, опционально).",
-        };
-        var jsonFileOpt = new Option<string?>("--json-file")
-        {
-            Description = "Путь к JSON-файлу с телом запроса (raw-режим).",
-        };
-        var jsonStdinOpt = new Option<bool>("--json-stdin")
-        {
-            Description = "Читать JSON-тело из stdin (raw-режим, альтернатива --json-file).",
-        };
+        var assignAutoOpt = new Option<bool>("--assign-auto") { Description = "Автоназначение (override поля assignAuto=true)." };
+        var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
+        var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
         var cmd = new Command("create", "Создать компонент (POST /v3/components).");
         cmd.Options.Add(queueOpt);
@@ -82,39 +61,49 @@ public static class ComponentCreateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(queue)
-                    || !string.IsNullOrWhiteSpace(name)
-                    || !string.IsNullOrWhiteSpace(description)
-                    || !string.IsNullOrWhiteSpace(lead)
-                    || assignAuto;
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
+                var hasNestedTyped = !string.IsNullOrWhiteSpace(queue) || !string.IsNullOrWhiteSpace(lead);
+                var hasRawSource = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
 
-                if (hasTyped && hasRaw)
+                if (hasNestedTyped && hasRawSource)
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "component create: typed flags and --json-file/--json-stdin are mutually exclusive.");
+                    throw new TrackerException(ErrorCode.InvalidArgs,
+                        "component create: --queue/--lead cannot be combined with --json-file/--json-stdin (use a JSON object instead).");
                 }
 
-                string body;
-                if (hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "component create: --json-file/--json-stdin produced no content.");
+                    overrides.Add(("name", JsonBodyMerger.OverrideValue.Of(name!)));
                 }
-                else
+                if (!string.IsNullOrWhiteSpace(description))
                 {
-                    if (string.IsNullOrWhiteSpace(queue) || string.IsNullOrWhiteSpace(name))
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
+                }
+                if (assignAuto)
+                {
+                    overrides.Add(("assignAuto", JsonBodyMerger.OverrideValue.Of(true)));
+                }
+
+                var rawSource = hasRawSource
+                    ? JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
+                    : BuildNestedTypedBase(queue, lead);
+
+                var body = JsonBodyMerger.Merge(rawSource, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
+                        "component create: provide --json-file/--json-stdin or typed flags.");
+
+                using (var doc = JsonDocument.Parse(body))
+                {
+                    if (!doc.RootElement.TryGetProperty("queue", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "component create: --queue and --name are required in typed mode (or use --json-file/--json-stdin).");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'queue'.");
                     }
-
-                    body = BuildTypedBody(queue, name, description, lead, assignAuto);
+                    if (!doc.RootElement.TryGetProperty("name", out _))
+                    {
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'name'.");
+                    }
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -141,50 +130,38 @@ public static class ComponentCreateCommand
     }
 
     /// <summary>
-    /// Формирует JSON-тело запроса из typed-флагов. <c>queue</c> и <c>lead</c>
-    /// оборачиваются в объекты (<c>{"key":...}</c> и <c>{"login":...}</c> соответственно).
+    /// Синтезирует базовый JSON-объект только из nested-typed-флагов
+    /// (<c>--queue</c> -> <c>{"queue":{"key":...}}</c>, <c>--lead</c> -> <c>{"lead":{"login":...}}</c>).
+    /// Возвращает <c>null</c>, если ни один nested-флаг не задан.
     /// </summary>
-    /// <param name="queue">Ключ очереди.</param>
-    /// <param name="name">Название компонента.</param>
-    /// <param name="description">Описание (опционально).</param>
-    /// <param name="lead">Логин владельца (опционально).</param>
-    /// <param name="assignAuto">Флаг автоназначения (только если <c>true</c>).</param>
-    /// <returns>Сериализованное JSON-тело.</returns>
-    private static string BuildTypedBody(
-        string queue,
-        string name,
-        string? description,
-        string? lead,
-        bool assignAuto)
+    /// <param name="queue">Значение опции <c>--queue</c>.</param>
+    /// <param name="lead">Значение опции <c>--lead</c>.</param>
+    /// <returns>Сериализованный JSON-объект либо <c>null</c>.</returns>
+    private static string? BuildNestedTypedBase(string? queue, string? lead)
     {
+        if (string.IsNullOrWhiteSpace(queue) && string.IsNullOrWhiteSpace(lead))
+        {
+            return null;
+        }
+
         using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
         {
             w.WriteStartObject();
-            w.WriteStartObject("queue");
-            w.WriteString("key", queue);
-            w.WriteEndObject();
-            w.WriteString("name", name);
-            if (!string.IsNullOrWhiteSpace(description))
+            if (!string.IsNullOrWhiteSpace(queue))
             {
-                w.WriteString("description", description);
+                w.WriteStartObject("queue");
+                w.WriteString("key", queue);
+                w.WriteEndObject();
             }
-
             if (!string.IsNullOrWhiteSpace(lead))
             {
                 w.WriteStartObject("lead");
                 w.WriteString("login", lead);
                 w.WriteEndObject();
             }
-
-            if (assignAuto)
-            {
-                w.WriteBoolean("assignAuto", true);
-            }
-
             w.WriteEndObject();
         }
-
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 }
