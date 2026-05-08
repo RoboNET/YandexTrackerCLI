@@ -17,6 +17,7 @@ public static class TriggerCommandBuilder
         var cmd = new Command("trigger", "Триггеры очереди (CRUD + activate/deactivate).");
         cmd.Subcommands.Add(TriggerListCommand.Build());
         cmd.Subcommands.Add(TriggerGetCommand.Build());
+        cmd.Subcommands.Add(TriggerCreateCommand.Build());
         return cmd;
     }
 }
