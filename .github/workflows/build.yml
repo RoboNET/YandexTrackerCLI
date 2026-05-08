@@ -119,10 +119,6 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          # PAT (а не GITHUB_TOKEN) — иначе release event не триггерит
-          # chained workflows update-homebrew-tap.yml / update-scoop-bucket.yml.
-          # См. https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           files: |
             artifacts/yt-*.tar.gz
             artifacts/yt-*.zip
@@ -131,3 +127,21 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Release создан через GITHUB_TOKEN — следствие: release event НЕ триггерит
+      # chained workflows (anti-recursion правило GitHub Actions). Поэтому явно
+      # дёргаем bucket workflows через workflow_dispatch с PAT.
+      - name: Dispatch bucket workflows
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh workflow run "Update Homebrew tap" \
+            --repo ${{ github.repository }} \
+            --ref main \
+            --field version="$VERSION"
+          gh workflow run "Update Scoop bucket" \
+            --repo ${{ github.repository }} \
+            --ref main \
+            --field version="$VERSION"
