@@ -1,18 +1,16 @@
 namespace YandexTrackerCLI.Commands.Version;
 
 using System.CommandLine;
-using System.Text;
-using System.Text.Json;
 using Core.Api.Errors;
 using Input;
 using Output;
 
 /// <summary>
 /// Команда <c>yt version update &lt;id&gt;</c>: обновляет версию через
-/// <c>PATCH /v3/versions/{id}</c>. Поддерживает typed-режим (все поля опциональны —
-/// <c>--name</c>, <c>--description</c>, <c>--start-date</c>, <c>--due-date</c>, <c>--released</c>)
-/// и raw-режим (<c>--json-file</c>/<c>--json-stdin</c>). Хотя бы один источник данных
-/// обязателен. Даты валидируются как ISO 8601.
+/// <c>PATCH /v3/versions/{id}</c>. Тело собирается через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar-флаги
+/// (<c>--name</c>, <c>--description</c>, <c>--start-date</c>, <c>--due-date</c>,
+/// <c>--released</c>) мерджатся поверх raw-payload.
 /// </summary>
 public static class VersionUpdateCommand
 {
@@ -23,34 +21,13 @@ public static class VersionUpdateCommand
     public static Command Build()
     {
         var idArg = new Argument<string>("id") { Description = "Идентификатор версии." };
-        var nameOpt = new Option<string?>("--name")
-        {
-            Description = "Новое название версии (typed-режим, опционально).",
-        };
-        var descriptionOpt = new Option<string?>("--description")
-        {
-            Description = "Новое описание версии (typed-режим, опционально).",
-        };
-        var startDateOpt = new Option<string?>("--start-date")
-        {
-            Description = "Новая дата начала в формате ISO 8601 (typed-режим, опционально).",
-        };
-        var dueDateOpt = new Option<string?>("--due-date")
-        {
-            Description = "Новая дата завершения в формате ISO 8601 (typed-режим, опционально).",
-        };
-        var releasedOpt = new Option<bool?>("--released")
-        {
-            Description = "Флаг \"версия выпущена\" (typed-режим, опционально).",
-        };
-        var jsonFileOpt = new Option<string?>("--json-file")
-        {
-            Description = "Путь к JSON-файлу с телом запроса (raw-режим).",
-        };
-        var jsonStdinOpt = new Option<bool>("--json-stdin")
-        {
-            Description = "Читать JSON-тело из stdin (raw-режим, альтернатива --json-file).",
-        };
+        var nameOpt = new Option<string?>("--name") { Description = "Новое название (override поля name)." };
+        var descriptionOpt = new Option<string?>("--description") { Description = "Новое описание (override поля description)." };
+        var startDateOpt = new Option<string?>("--start-date") { Description = "Новая дата начала ISO 8601 (override поля startDate)." };
+        var dueDateOpt = new Option<string?>("--due-date") { Description = "Новая дата завершения ISO 8601 (override поля dueDate)." };
+        var releasedOpt = new Option<bool?>("--released") { Description = "Флаг released (override поля released)." };
+        var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
+        var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
         var cmd = new Command("update", "Обновить версию (PATCH /v3/versions/{id}).");
         cmd.Arguments.Add(idArg);
@@ -75,39 +52,40 @@ public static class VersionUpdateCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped =
-                    !string.IsNullOrWhiteSpace(name)
-                    || !string.IsNullOrWhiteSpace(description)
-                    || !string.IsNullOrWhiteSpace(startDate)
-                    || !string.IsNullOrWhiteSpace(dueDate)
-                    || released.HasValue;
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                if (!string.IsNullOrWhiteSpace(startDate))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "version update: typed flags and --json-file/--json-stdin are mutually exclusive.");
+                    VersionDateValidator.ValidateIsoDate(startDate!, "--start-date");
+                }
+                if (!string.IsNullOrWhiteSpace(dueDate))
+                {
+                    VersionDateValidator.ValidateIsoDate(dueDate!, "--due-date");
                 }
 
-                string body;
-                if (hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "version update: --json-file/--json-stdin produced no content.");
+                    overrides.Add(("name", JsonBodyMerger.OverrideValue.Of(name!)));
                 }
-                else if (hasTyped)
+                if (!string.IsNullOrWhiteSpace(description))
                 {
-                    body = BuildTypedBody(name, description, startDate, dueDate, released);
+                    overrides.Add(("description", JsonBodyMerger.OverrideValue.Of(description!)));
                 }
-                else
+                if (!string.IsNullOrWhiteSpace(startDate))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                    overrides.Add(("startDate", JsonBodyMerger.OverrideValue.Of(startDate!)));
+                }
+                if (!string.IsNullOrWhiteSpace(dueDate))
+                {
+                    overrides.Add(("dueDate", JsonBodyMerger.OverrideValue.Of(dueDate!)));
+                }
+                if (released.HasValue)
+                {
+                    overrides.Add(("released", JsonBodyMerger.OverrideValue.Of(released.Value)));
+                }
+
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "version update: nothing to update (provide typed flags or --json-file/--json-stdin).");
-                }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -133,62 +111,5 @@ public static class VersionUpdateCommand
         });
 
         return cmd;
-    }
-
-    /// <summary>
-    /// Формирует JSON-тело PATCH-запроса из typed-флагов. Пишет только те поля,
-    /// которые фактически заданы. Даты предварительно валидируются как ISO 8601.
-    /// </summary>
-    /// <param name="name">Новое название (опционально).</param>
-    /// <param name="description">Новое описание (опционально).</param>
-    /// <param name="startDate">Новая дата начала, ISO 8601 (опционально).</param>
-    /// <param name="dueDate">Новая дата завершения, ISO 8601 (опционально).</param>
-    /// <param name="released">Флаг "выпущена" (опционально).</param>
-    /// <returns>Сериализованное JSON-тело.</returns>
-    /// <exception cref="TrackerException">
-    /// Бросается с <see cref="ErrorCode.InvalidArgs"/>, если даты не парсятся как ISO 8601.
-    /// </exception>
-    private static string BuildTypedBody(
-        string? name,
-        string? description,
-        string? startDate,
-        string? dueDate,
-        bool? released)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
-        {
-            w.WriteStartObject();
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                w.WriteString("name", name);
-            }
-
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                w.WriteString("description", description);
-            }
-
-            if (!string.IsNullOrWhiteSpace(startDate))
-            {
-                VersionDateValidator.ValidateIsoDate(startDate, "--start-date");
-                w.WriteString("startDate", startDate);
-            }
-
-            if (!string.IsNullOrWhiteSpace(dueDate))
-            {
-                VersionDateValidator.ValidateIsoDate(dueDate, "--due-date");
-                w.WriteString("dueDate", dueDate);
-            }
-
-            if (released.HasValue)
-            {
-                w.WriteBoolean("released", released.Value);
-            }
-
-            w.WriteEndObject();
-        }
-
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }
