@@ -45,6 +45,38 @@ brew install RoboNET/yt/yt
 brew upgrade yt
 ```
 
+### Scoop (Windows)
+
+```powershell
+scoop bucket add yt https://github.com/RoboNET/scoop-yt
+scoop install yt
+```
+
+Обновление:
+
+```powershell
+scoop update yt
+```
+
+### PowerShell-инсталлер (Windows, без Scoop)
+
+```powershell
+irm https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 | iex
+```
+
+Установит `yt.exe` в `%LOCALAPPDATA%\Programs\yt` и добавит каталог в user PATH. Поддерживаются параметры:
+
+```powershell
+# Конкретная версия
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1))) -Version 0.1.2
+
+# Свой каталог установки, без правки PATH
+iwr https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 -OutFile install.ps1
+.\install.ps1 -InstallDir C:\tools\yt -NoPath
+```
+
+Скрипт скачивает `yt-win-x64.zip`, проверяет SHA256 из `SHA256SUMS` и распаковывает `yt.exe`. На ARM64-Windows ставится x64-сборка (работает через эмуляцию).
+
 ### Готовый бинарь
 
 Скачайте архив для своей платформы со страницы [Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest):
@@ -75,7 +107,7 @@ yt --version
 xattr -d com.apple.quarantine /usr/local/bin/yt
 ```
 
-На Windows распакуйте `yt.exe` из zip и положите в любую папку из `PATH`.
+На Windows распакуйте `yt.exe` из zip и положите в любую папку из `PATH` (или используйте Scoop / `install.ps1` выше).
 
 Размер бинаря в архиве — около 3–4 МБ (распакованный — 7–8 МБ).
 

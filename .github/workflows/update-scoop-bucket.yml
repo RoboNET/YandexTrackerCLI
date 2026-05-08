@@ -1,0 +1,99 @@
+name: Update Scoop bucket
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия без префикса v (например 0.1.1)"
+        required: true
+        type: string
+
+jobs:
+  update-bucket:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout bucket
+        uses: actions/checkout@v4
+        with:
+          repository: RoboNET/scoop-yt
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: bucket
+
+      - name: Resolve version + SHA256
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          curl -sSfL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/SHA256SUMS" -o /tmp/sums
+          cat /tmp/sums
+
+          SHA_WIN_X64=$(awk '/yt-win-x64\.zip/ {print $1}' /tmp/sums)
+          if [ -z "$SHA_WIN_X64" ]; then
+            echo "::error::yt-win-x64.zip SHA256 not found in SHA256SUMS"
+            exit 1
+          fi
+          echo "sha_win_x64=$SHA_WIN_X64" >> "$GITHUB_OUTPUT"
+
+      - name: Generate yt.json
+        env:
+          VERSION:     ${{ steps.vars.outputs.version }}
+          SHA_WIN_X64: ${{ steps.vars.outputs.sha_win_x64 }}
+        run: |
+          cat > bucket/yt.json <<EOF
+          {
+              "version": "${VERSION}",
+              "description": "Yandex Tracker CLI — NativeAOT, JSON-first, four auth methods.",
+              "homepage": "https://github.com/RoboNET/YandexTrackerCLI",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v${VERSION}/yt-win-x64.zip",
+                      "hash": "${SHA_WIN_X64}"
+                  }
+              },
+              "bin": "yt.exe",
+              "checkver": {
+                  "github": "https://github.com/RoboNET/YandexTrackerCLI"
+              },
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v\$version/yt-win-x64.zip"
+                      }
+                  },
+                  "hash": {
+                      "url": "https://github.com/RoboNET/YandexTrackerCLI/releases/download/v\$version/SHA256SUMS",
+                      "regex": "(?<sha>[A-Fa-f0-9]{64})\\\\s+yt-win-x64\\\\.zip"
+                  }
+              }
+          }
+          EOF
+
+          echo "--- generated manifest ---"
+          cat bucket/yt.json
+
+      - name: Validate JSON
+        run: |
+          python3 -c "import json,sys; json.load(open('bucket/yt.json')); print('JSON OK')"
+
+      - name: Commit and push to bucket
+        run: |
+          cd bucket
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add yt.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "yt ${{ steps.vars.outputs.version }}"
+            git push
+          fi
