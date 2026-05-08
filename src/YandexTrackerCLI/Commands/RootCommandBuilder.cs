@@ -145,6 +145,7 @@ public static class RootCommandBuilder
         root.Subcommands.Add(queue);
 
         root.Subcommands.Add(Issue.IssueCommandBuilder.Build());
+        root.Subcommands.Add(Automation.AutomationCommandBuilder.Build());
         root.Subcommands.Add(Comment.CommentCommandBuilder.Build());
         root.Subcommands.Add(Worklog.WorklogCommandBuilder.Build());
         root.Subcommands.Add(Attachment.AttachmentCommandBuilder.Build());
