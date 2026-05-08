@@ -1,7 +1,6 @@
 namespace YandexTrackerCLI.Commands.Issue;
 
 using System.CommandLine;
-using System.Text;
 using System.Text.Json;
 using Core.Api.Errors;
 using Input;
@@ -9,22 +8,11 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt issue move &lt;key&gt;</c>: перемещение задачи в другую очередь
-/// (<c>POST /v3/issues/{key}/_move</c>).
+/// (<c>POST /v3/issues/{key}/_move</c>). Тело собирается через
+/// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаг
+/// <c>--to-queue</c> мерджится поверх raw-payload как поле <c>queue</c>.
+/// Эффективное тело должно содержать <c>queue</c>.
 /// </summary>
-/// <remarks>
-/// Режимы формирования тела запроса:
-/// <list type="bullet">
-///   <item><description>
-///     <c>--to-queue &lt;QUEUE&gt;</c> — построить typed body вида <c>{"queue":"QUEUE"}</c>.
-///   </description></item>
-///   <item><description>
-///     <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c> — использовать произвольное
-///     raw JSON-тело (позволяет передать дополнительные поля вроде <c>notify</c>).
-///   </description></item>
-/// </list>
-/// Одновременное использование <c>--to-queue</c> и <c>--json-file</c>/<c>--json-stdin</c>
-/// либо отсутствие обоих завершит команду с кодом 2 (<see cref="ErrorCode.InvalidArgs"/>).
-/// </remarks>
 public static class IssueMoveCommand
 {
     /// <summary>
@@ -35,7 +23,7 @@ public static class IssueMoveCommand
     {
         var keyArg = new Argument<string>("key") { Description = "Ключ задачи (например DEV-1)." };
 
-        var toQueueOpt = new Option<string?>("--to-queue") { Description = "Ключ целевой очереди (например NEWQ)." };
+        var toQueueOpt = new Option<string?>("--to-queue") { Description = "Ключ целевой очереди (override поля queue)." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
 
@@ -54,40 +42,23 @@ public static class IssueMoveCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTyped = !string.IsNullOrWhiteSpace(toQueue);
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(toQueue))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --to-queue with --json-file/--json-stdin.");
+                    overrides.Add(("queue", JsonBodyMerger.OverrideValue.Of(toQueue!)));
                 }
 
-                if (!hasTyped && !hasRaw)
-                {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --to-queue <QUEUE> or --json-file/--json-stdin.");
-                }
 
-                string body;
-                if (hasRaw)
+                using (var doc = JsonDocument.Parse(body))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    using var ms = new MemoryStream();
-                    using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
+                    if (!doc.RootElement.TryGetProperty("queue", out _))
                     {
-                        w.WriteStartObject();
-                        w.WriteString("queue", toQueue!);
-                        w.WriteEndObject();
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'queue'.");
                     }
-
-                    body = Encoding.UTF8.GetString(ms.ToArray());
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
