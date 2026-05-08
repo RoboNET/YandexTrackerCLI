@@ -1,6 +1,7 @@
 namespace YandexTrackerCLI.Commands.Automation;
 
 using System.CommandLine;
+using Autoaction;
 using Trigger;
 
 /// <summary>
@@ -17,6 +18,7 @@ public static class AutomationCommandBuilder
     {
         var cmd = new Command("automation", "Автоматизации очереди: триггеры, автодействия, макросы.");
         cmd.Subcommands.Add(TriggerCommandBuilder.Build());
+        cmd.Subcommands.Add(AutoactionCommandBuilder.Build());
         return cmd;
     }
 }
