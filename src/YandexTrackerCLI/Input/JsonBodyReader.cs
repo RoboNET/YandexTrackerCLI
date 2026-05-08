@@ -72,4 +72,24 @@ public static class JsonBodyReader
 
         return content;
     }
+
+    /// <summary>
+    /// Читает raw-JSON через <see cref="Read"/> и сливает с typed-override'ами
+    /// через <see cref="JsonBodyMerger.Merge"/>. Удобный helper для CLI-команд,
+    /// принимающих и raw-payload, и inline-флаги одновременно.
+    /// </summary>
+    /// <param name="filePath">Значение флага <c>--json-file</c>.</param>
+    /// <param name="fromStdin">Значение флага <c>--json-stdin</c>.</param>
+    /// <param name="stdinReader">Источник stdin при <paramref name="fromStdin"/>=<c>true</c>.</param>
+    /// <param name="overrides">Inline-override'ы в порядке регистрации.</param>
+    /// <returns>Слитый JSON-объект либо <c>null</c>, если оба входа пусты.</returns>
+    public static string? ReadAndMerge(
+        string? filePath,
+        bool fromStdin,
+        TextReader? stdinReader,
+        IReadOnlyList<(string Key, JsonBodyMerger.OverrideValue Value)> overrides)
+    {
+        var raw = Read(filePath, fromStdin, stdinReader);
+        return JsonBodyMerger.Merge(raw, overrides);
+    }
 }
