@@ -1,27 +1,18 @@
 namespace YandexTrackerCLI.Commands.Link;
 
 using System.CommandLine;
-using System.Text;
 using System.Text.Json;
 using Core.Api.Errors;
 using Input;
 using Output;
 
 /// <summary>
-/// Команда <c>yt link add &lt;issue-key&gt; --to &lt;other-key&gt; --type &lt;relationship&gt;</c>:
-/// добавляет связь задачи (<c>POST /v3/issues/{key}/links</c>). Поддерживает два режима:
-/// <list type="bullet">
-///   <item><description>
-///     <b>Typed</b> — через обязательные <c>--to</c> и <c>--type</c>. В теле запроса
-///     формируется объект <c>{"relationship":"&lt;type&gt;","issue":"&lt;other-key&gt;"}</c>.
-///     Допустимые значения <c>--type</c> валидируются парсером через
-///     <see cref="Option{T}.AcceptOnlyFromAmong(string[])"/>.
-///   </description></item>
-///   <item><description>
-///     <b>Raw JSON</b> — через <c>--json-file &lt;path&gt;</c> или <c>--json-stdin</c>
-///     (взаимоисключается с typed-опциями).
-///   </description></item>
-/// </list>
+/// Команда <c>yt link add &lt;issue-key&gt;</c>: добавляет связь
+/// (<c>POST /v3/issues/{key}/links</c>). Тело собирается из источника
+/// (<c>--json-file</c>/<c>--json-stdin</c>) и inline-флагов
+/// (<c>--to</c>, <c>--type</c>) через <see cref="JsonBodyReader.ReadAndMerge"/>:
+/// inline-override побеждает одноимённые поля. Эффективное тело должно
+/// содержать <c>relationship</c> и <c>issue</c>.
 /// </summary>
 public static class LinkAddCommand
 {
@@ -32,8 +23,8 @@ public static class LinkAddCommand
     public static Command Build()
     {
         var keyArg = new Argument<string>("issue-key") { Description = "Ключ задачи (например DEV-1)." };
-        var toOpt = new Option<string?>("--to") { Description = "Ключ связанной задачи (например DEV-2)." };
-        var typeOpt = new Option<string?>("--type") { Description = "Тип связи." };
+        var toOpt = new Option<string?>("--to") { Description = "Ключ связанной задачи (override поля issue)." };
+        var typeOpt = new Option<string?>("--type") { Description = "Тип связи (override поля relationship)." };
         typeOpt.AcceptOnlyFromAmong(
             "relates",
             "is-dependent-by",
@@ -66,41 +57,32 @@ public static class LinkAddCommand
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
 
-                var hasTo = !string.IsNullOrWhiteSpace(toKey);
-                var hasType = !string.IsNullOrWhiteSpace(type);
-                var hasTyped = hasTo || hasType;
-                var hasRaw = !string.IsNullOrWhiteSpace(jsonFile) || jsonStdin;
-
-                if (hasTyped && hasRaw)
+                var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
+                if (!string.IsNullOrWhiteSpace(type))
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        "Cannot combine --to/--type with --json-file/--json-stdin.");
+                    overrides.Add(("relationship", JsonBodyMerger.OverrideValue.Of(type!)));
+                }
+                if (!string.IsNullOrWhiteSpace(toKey))
+                {
+                    overrides.Add(("issue", JsonBodyMerger.OverrideValue.Of(toKey!)));
                 }
 
-                if (!hasTyped && !hasRaw)
-                {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
+                var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
+                    ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Provide --to and --type, or --json-file/--json-stdin.");
-                }
 
-                string body;
-                if (hasRaw)
+                using (var doc = JsonDocument.Parse(body))
                 {
-                    body = JsonBodyReader.Read(jsonFile, jsonStdin, Console.In)
-                        ?? throw new TrackerException(ErrorCode.InvalidArgs, "Empty request body.");
-                }
-                else
-                {
-                    if (!hasTo || !hasType)
+                    if (!doc.RootElement.TryGetProperty("relationship", out _))
                     {
-                        throw new TrackerException(
-                            ErrorCode.InvalidArgs,
-                            "Both --to and --type are required in typed mode.");
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'relationship'.");
                     }
-
-                    body = BuildTypedBody(type!, toKey!);
+                    if (!doc.RootElement.TryGetProperty("issue", out _))
+                    {
+                        throw new TrackerException(ErrorCode.InvalidArgs,
+                            "Effective body must include 'issue'.");
+                    }
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -126,25 +108,5 @@ public static class LinkAddCommand
             }
         });
         return cmd;
-    }
-
-    /// <summary>
-    /// Строит JSON-тело запроса для типизированного режима
-    /// (<c>{"relationship":"&lt;type&gt;","issue":"&lt;other-key&gt;"}</c>).
-    /// </summary>
-    /// <param name="type">Тип связи (уже провалидирован парсером).</param>
-    /// <param name="toKey">Ключ связанной задачи.</param>
-    /// <returns>Сериализованный компактный JSON-объект.</returns>
-    internal static string BuildTypedBody(string type, string toKey)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteString("relationship", type);
-            w.WriteString("issue", toKey);
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }
