@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Core.Api;
 using Core.Api.Errors;
+using Interactive;
 using Output;
 
 /// <summary>
@@ -121,14 +122,15 @@ public static class IssueFindCommand
                     ct: ct);
 
                 var bodyJson = BuildBody(yql);
+                var ui = InteractiveUIResolver.Resolve(ctx.EffectiveOutputFormat);
 
                 if (stream)
                 {
-                    await StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, ct);
+                    await ui.Status("Загружаем задачи...", _ => StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, ct), ct);
                 }
                 else
                 {
-                    await WriteAggregatedAsync(ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, ct);
+                    await ui.Status("Загружаем задачи...", statusCtx => WriteAggregatedAsync(ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, statusCtx, ct), ct);
                 }
 
                 return 0;
@@ -172,6 +174,7 @@ public static class IssueFindCommand
         int perPage,
         int max,
         OutputFormat format,
+        IStatusContext statusCtx,
         CancellationToken ct)
     {
         var pretty = !Console.IsOutputRedirected;
@@ -183,7 +186,12 @@ public static class IssueFindCommand
             await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, ct))
             {
                 el.WriteTo(w);
-                if (++count >= max)
+                count++;
+                if ((count % perPage) == 0)
+                {
+                    statusCtx.Update($"Загружено {count} задач...");
+                }
+                if (count >= max)
                 {
                     break;
                 }
