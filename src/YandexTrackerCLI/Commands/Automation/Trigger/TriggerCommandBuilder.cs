@@ -18,6 +18,7 @@ public static class TriggerCommandBuilder
         cmd.Subcommands.Add(TriggerListCommand.Build());
         cmd.Subcommands.Add(TriggerGetCommand.Build());
         cmd.Subcommands.Add(TriggerCreateCommand.Build());
+        cmd.Subcommands.Add(TriggerUpdateCommand.Build());
         return cmd;
     }
 }
