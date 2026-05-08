@@ -19,6 +19,39 @@ using Interactive;
 public sealed record FederatedTokenResult(string AccessToken, string? RefreshToken, DateTimeOffset ExpiresAt);
 
 /// <summary>
+/// Дискретные фазы federated OAuth flow, эмитимые через <see cref="IProgress{T}"/>
+/// для интерактивного UI (Spectre status).
+/// </summary>
+public enum FederatedPhaseKind
+{
+    /// <summary>Запуск локального loopback HTTP listener.</summary>
+    StartingCallbackServer,
+
+    /// <summary>Открытие authorize URL в системном браузере.</summary>
+    OpeningBrowser,
+
+    /// <summary>Ожидание HTTP callback от браузера.</summary>
+    WaitingForCallback,
+
+    /// <summary>POST на token endpoint (обмен code → access_token, DPoP-bound).</summary>
+    ExchangingCode,
+
+    /// <summary>Token успешно получен и распарсен.</summary>
+    Completed,
+}
+
+/// <summary>
+/// Событие фазы federated OAuth flow.
+/// </summary>
+/// <param name="Kind">Тип фазы.</param>
+/// <param name="Message">Человекочитаемое сообщение (для NoopUI/wire-log).</param>
+/// <param name="CallbackPort">Порт локального callback-сервера (только для <see cref="FederatedPhaseKind.StartingCallbackServer"/> и далее).</param>
+public readonly record struct FederatedPhase(
+    FederatedPhaseKind Kind,
+    string Message,
+    int? CallbackPort = null);
+
+/// <summary>
 /// Browser-based PKCE OAuth flow для federated пользовательского входа в Yandex Cloud
 /// (по мотивам <c>yc init --federation-id</c>) с DPoP-биндингом авторизации.
 /// </summary>
@@ -95,7 +128,8 @@ public static class FederatedOAuthFlow
         CancellationToken ct,
         string authorizeEndpoint = DefaultAuthorizeEndpoint,
         string tokenEndpoint = DefaultTokenEndpoint,
-        IWireLogSink? wireLogSink = null)
+        IWireLogSink? wireLogSink = null,
+        IProgress<FederatedPhase>? phaseReporter = null)
     {
         ArgumentNullException.ThrowIfNull(dpopKey);
         ArgumentNullException.ThrowIfNull(browser);
@@ -106,6 +140,10 @@ public static class FederatedOAuthFlow
         var pkce = PkceChallengeFactory.Generate();
         var state = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
         var jkt = DPoPProof.ComputeJktThumbprint(dpopKey);
+
+        phaseReporter?.Report(new FederatedPhase(
+            FederatedPhaseKind.StartingCallbackServer,
+            "Starting local callback server..."));
 
         await using var server = LocalCallbackServer.Start();
         var redirectUri = $"http://127.0.0.1:{server.Port}/auth/callback";
@@ -131,7 +169,19 @@ public static class FederatedOAuthFlow
             await wireLogSink.WriteAsync(FormatAuthorizeUrlLog(authUrl), ct);
         }
 
+        var browserOrigin = TryGetOrigin(authUrl);
+        phaseReporter?.Report(new FederatedPhase(
+            FederatedPhaseKind.OpeningBrowser,
+            $"Opening browser: {browserOrigin}",
+            CallbackPort: server.Port));
+
         await browser.OpenAsync(authUrl, ct);
+
+        phaseReporter?.Report(new FederatedPhase(
+            FederatedPhaseKind.WaitingForCallback,
+            $"Waiting for browser callback on :{server.Port}...",
+            CallbackPort: server.Port));
+
         var callback = await server.AwaitCallbackAsync(timeout, ct);
 
         if (!string.IsNullOrEmpty(callback.Error))
@@ -157,6 +207,10 @@ public static class FederatedOAuthFlow
             ["redirect_uri"] = redirectUri,
             ["client_id"] = clientId,
         };
+
+        phaseReporter?.Report(new FederatedPhase(
+            FederatedPhaseKind.ExchangingCode,
+            "Exchanging code for token (DPoP)..."));
 
         var (status, body, nonceChallenge) = await PostTokenRequest(
             tokenHttp, tokenEndpoint, form, dpopKey, nonce: null, ct);
@@ -193,7 +247,25 @@ public static class FederatedOAuthFlow
             ? ei.GetInt64()
             : 3600;
 
+        phaseReporter?.Report(new FederatedPhase(
+            FederatedPhaseKind.Completed,
+            "Token exchange completed."));
+
         return new FederatedTokenResult(accessToken, refreshToken, DateTimeOffset.UtcNow.AddSeconds(expiresIn));
+    }
+
+    /// <summary>
+    /// Извлекает scheme+host из URL для безопасной демонстрации в UI без чувствительных
+    /// query-параметров. При парсинге-ошибке возвращает пустую строку.
+    /// </summary>
+    private static string TryGetOrigin(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return $"{uri.Scheme}://{uri.Host}";
+        }
+
+        return string.Empty;
     }
 
     /// <summary>

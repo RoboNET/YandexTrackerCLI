@@ -24,16 +24,17 @@ public sealed class SkillManagerProgressTests
         InstallClaude(env);
 
         var events = new List<SkillProgressEvent>();
-        var progress = new Progress<SkillProgressEvent>(events.Add);
+
+        // Synchronous IProgress<T>, чтобы избежать гонки с <see cref="Progress{T}"/>,
+        // который диспатчит callbacks через SyncContext или thread pool — события могут
+        // прийти после await Task.Yield() в TUnit.
+        var progress = new SyncProgress(events.Add);
 
         var results = SkillManager.Update(
             new[] { SkillTarget.Claude, SkillTarget.Codex },
             new[] { SkillScope.Global, SkillScope.Project },
             env.Root,
             progress);
-
-        // Дождёмся доставки событий — Progress<T> постит через SyncContext, в TUnit это inline в текущем потоке.
-        // Но на всякий случай дадим event-loop обработать.
         await Task.Yield();
 
         await Assert.That(results.Count).IsEqualTo(1);

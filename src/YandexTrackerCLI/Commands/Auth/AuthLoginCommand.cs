@@ -11,6 +11,8 @@ using Interactive;
 using YandexTrackerCLI.Core.Config;
 using Core.Http;
 using Output;
+using Spectre.Console;
+using Profile = YandexTrackerCLI.Core.Config.Profile;
 
 /// <summary>
 /// Команда <c>yt auth login</c>: сохраняет креды для выбранного типа аутентификации
@@ -152,9 +154,12 @@ public static class AuthLoginCommand
                 var orgId = parseResult.GetValue(orgIdOption)!;
                 var profileName = parseResult.GetValue(RootCommandBuilder.ProfileOption) ?? "default";
 
+                var effectiveFormat = CommandFormatHelper.ResolveForCommand(parseResult);
+                var ui = InteractiveUIResolver.Resolve(effectiveFormat);
+
                 if (type == "oauth" && string.IsNullOrWhiteSpace(token))
                 {
-                    token = await ResolveOAuthTokenInteractive(clientId, ct);
+                    token = await ResolveOAuthTokenInteractive(clientId, ui, ct);
                 }
 
                 var wireLogPath = parseResult.GetValue(RootCommandBuilder.LogFileOption)
@@ -167,7 +172,7 @@ public static class AuthLoginCommand
                     "oauth"           => BuildOAuth(token),
                     "iam-static"      => BuildIamStatic(token),
                     "service-account" => BuildSa(saId, keyId, keyFile, keyPem),
-                    "federated"       => await BuildFederated(federationId, clientId, timeoutAuthSec, profileName, wireLogPath, wireLogMask, ct),
+                    "federated"       => await BuildFederated(federationId, clientId, timeoutAuthSec, profileName, wireLogPath, wireLogMask, ui, ct),
                     _ => throw new TrackerException(ErrorCode.InvalidArgs, $"Unknown --type {type}"),
                 };
 
@@ -228,7 +233,7 @@ public static class AuthLoginCommand
     /// <see cref="ErrorCode.InvalidArgs"/> — stdin перенаправлен (не TTY);
     /// <see cref="ErrorCode.AuthFailed"/> — пустой ввод после 3 попыток.
     /// </exception>
-    private static async Task<string> ResolveOAuthTokenInteractive(string? clientId, CancellationToken ct)
+    private static async Task<string> ResolveOAuthTokenInteractive(string? clientId, IInteractiveUI ui, CancellationToken ct)
     {
         var reader = TestTokenReader.Value ?? new ConsoleTokenReader();
         var launcher = TestBrowserLauncher.Value ?? new SystemBrowserLauncher();
@@ -246,6 +251,35 @@ public static class AuthLoginCommand
         var url = $"https://oauth.yandex.ru/authorize?response_type=token&client_id={Uri.EscapeDataString(effectiveClientId)}";
 
         await launcher.OpenAsync(url, ct);
+
+        // Spectre prompt path: only when no test token reader is injected and stderr is a real TTY.
+        // Otherwise — fall back to legacy Console.Error + reader.ReadLine() (preserves all existing
+        // tests using TestTokenReader and bit-exact stderr-redirected output).
+        if (ui.IsRich && TestTokenReader.Value is null)
+        {
+            var ansi = AnsiConsole.Create(new AnsiConsoleSettings
+            {
+                Out = new AnsiConsoleOutput(Console.Error),
+            });
+            ansi.MarkupLineInterpolated($"[grey]Browser opened:[/] {url}");
+            for (var i = 0; i < 3; i++)
+            {
+                var prompt = new TextPrompt<string>("[bold]Paste the OAuth token and press Enter:[/]")
+                {
+                    PromptStyle = new Style(foreground: Color.Yellow),
+                    AllowEmpty = true,
+                    IsSecret = true,
+                };
+                var entered = (ansi.Prompt(prompt) ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(entered))
+                {
+                    return entered;
+                }
+                ansi.MarkupLine("[red]Empty input. Try again.[/]");
+            }
+            throw new TrackerException(ErrorCode.AuthFailed, "No OAuth token provided after 3 attempts.");
+        }
+
         Console.Error.WriteLine($"Browser opened: {url}");
         Console.Error.WriteLine("Paste the OAuth token and press Enter:");
 
@@ -295,6 +329,7 @@ public static class AuthLoginCommand
         string profileName,
         string? wireLogPath,
         bool wireLogMask,
+        IInteractiveUI ui,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(federationId))
@@ -346,15 +381,33 @@ public static class AuthLoginCommand
                 : FederatedDefaultClientId;
             var timeout = TimeSpan.FromSeconds(timeoutSec);
 
-            var result = await FederatedOAuthFlow.RunAsync(
-                federationId,
-                effectiveClientId,
-                dpopKey,
-                launcher,
-                http,
-                timeout,
-                ct,
-                wireLogSink: wireSink);
+            var result = await ui.Status("Federated SSO login", async statusCtx =>
+            {
+                var phaseReporter = new Progress<FederatedPhase>(p =>
+                {
+                    var label = p.Kind switch
+                    {
+                        FederatedPhaseKind.StartingCallbackServer => "Starting local callback server...",
+                        FederatedPhaseKind.OpeningBrowser         => "Opening browser for sign-in...",
+                        FederatedPhaseKind.WaitingForCallback     => $"Waiting for browser callback on :{p.CallbackPort}...",
+                        FederatedPhaseKind.ExchangingCode         => "Exchanging code for token (DPoP)...",
+                        FederatedPhaseKind.Completed              => "Saving profile...",
+                        _ => p.Message,
+                    };
+                    statusCtx.Update(label);
+                });
+
+                return await FederatedOAuthFlow.RunAsync(
+                    federationId,
+                    effectiveClientId,
+                    dpopKey,
+                    launcher,
+                    http,
+                    timeout,
+                    ct,
+                    wireLogSink: wireSink,
+                    phaseReporter: phaseReporter);
+            }, ct);
 
             var expiresAtIso = result.ExpiresAt.ToUniversalTime().ToString("O");
 
