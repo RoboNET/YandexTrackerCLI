@@ -84,7 +84,42 @@ public sealed class WorklogAddCommandTests
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "worklog", "add", "DEV-1", "--json-file", path }, sw, er);
         await Assert.That(exit).IsEqualTo(0);
-        await Assert.That(capturedBody).IsEqualTo(raw);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("duration").GetString()).IsEqualTo("PT2H");
+        await Assert.That(doc.RootElement.GetProperty("start").GetString()).IsEqualTo("2024-01-15T10:00:00+03:00");
+    }
+
+    /// <summary>
+    /// Merge: <c>--json-file</c> + inline <c>--comment</c>/<c>--duration</c> => override побеждает.
+    /// </summary>
+    [Test]
+    public async Task WorklogAdd_JsonFile_WithInlineOverride_Merges()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var path = Path.Combine(Path.GetTempPath(), "wl-add-" + Guid.NewGuid().ToString("N") + ".json");
+        await File.WriteAllTextAsync(path, """{"duration":"PT1H","start":"2024-01-15T10:00:00+03:00"}""");
+
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.Created);
+            r.Content = new StringContent("""{"id":9}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "worklog", "add", "DEV-1", "--json-file", path, "--duration", "PT3H", "--comment", "merged" },
+            sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.GetProperty("duration").GetString()).IsEqualTo("PT3H");
+        await Assert.That(doc.RootElement.GetProperty("start").GetString()).IsEqualTo("2024-01-15T10:00:00+03:00");
+        await Assert.That(doc.RootElement.GetProperty("comment").GetString()).IsEqualTo("merged");
     }
 
     /// <summary>
