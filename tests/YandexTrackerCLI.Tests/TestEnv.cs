@@ -171,6 +171,11 @@ internal sealed class TestEnv : IDisposable
         // в рамках одного AsyncLocal-контекста (тесты с [NotInParallel]).
         TrackerContextFactory.TestInnerHandlerOverride.Value = null;
         TrackerContextFactory.TestIamExchangeOverride.Value = null;
+        TrackerContextFactory.TestFederatedRefreshOverride.Value = null;
+        TrackerContextFactory.TestInteractiveOverride.Value = null;
+        TrackerContextFactory.TestReloginHandlerOverride.Value = null;
+        YandexTrackerCLI.Auth.Federated.FederatedReloginService.TestBrowserLauncher.Value = null;
+        YandexTrackerCLI.Auth.Federated.FederatedReloginService.TestFederatedHttpClient.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestBrowserLauncher.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestTokenReader.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestFederatedHttpClient.Value = null;

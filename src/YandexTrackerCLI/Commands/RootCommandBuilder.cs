@@ -128,6 +128,7 @@ public static class RootCommandBuilder
         var auth = new Command("auth", "Управление аутентификацией.");
         auth.Subcommands.Add(Auth.AuthStatusCommand.Build());
         auth.Subcommands.Add(Auth.AuthLoginCommand.Build());
+        auth.Subcommands.Add(Auth.AuthReloginCommand.Build());
         auth.Subcommands.Add(Auth.AuthLogoutCommand.Build());
         root.Subcommands.Add(auth);
 
