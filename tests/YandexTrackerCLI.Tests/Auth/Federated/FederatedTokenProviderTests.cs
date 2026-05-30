@@ -81,6 +81,117 @@ public sealed class FederatedTokenProviderTests
         await Assert.That(fake.CallCount).IsEqualTo(1);
     }
 
+    private sealed class FailingRefresh : IFederatedRefreshClient
+    {
+        public int CallCount { get; private set; }
+
+        public Task<FederatedTokenResult> Refresh(string refreshToken, string clientId, ECDsa key, CancellationToken ct)
+        {
+            CallCount++;
+            throw new TrackerException(ErrorCode.AuthFailed, "refresh_token expired", httpStatus: 400);
+        }
+    }
+
+    private sealed class FakeReloginHandler : IFederatedReloginHandler
+    {
+        private readonly FederatedTokenResult _result;
+        public int CallCount { get; private set; }
+
+        public FakeReloginHandler(FederatedTokenResult result) => _result = result;
+
+        public Task<FederatedTokenResult> ReloginAsync(CancellationToken ct)
+        {
+            CallCount++;
+            return Task.FromResult(_result);
+        }
+    }
+
+    [Test]
+    public async Task RefreshFails_WithReloginHandler_InvokesReloginAndServesNewToken()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new FailingRefresh();
+        var relogin = new FakeReloginHandler(
+            new FederatedTokenResult("iam-after-relogin", "rt-fresh", DateTimeOffset.UtcNow.AddHours(1)));
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-expired",
+            clientId: "yc.oauth.public-sdk",
+            relogin: relogin,
+            reloginCommandHint: "yt auth relogin --profile ci");
+
+        var h = await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(h.Scheme).IsEqualTo("Bearer");
+        await Assert.That(h.Parameter).IsEqualTo("iam-after-relogin");
+        await Assert.That(refresh.CallCount).IsEqualTo(1);
+        await Assert.That(relogin.CallCount).IsEqualTo(1);
+
+        // Second call hits the cache populated by the relogin result — no extra relogin.
+        var h2 = await provider.GetAuthorizationAsync(CancellationToken.None);
+        await Assert.That(h2.Parameter).IsEqualTo("iam-after-relogin");
+        await Assert.That(relogin.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RefreshFails_NoReloginHandler_ThrowsAuthFailedWithCommandHint()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new FailingRefresh();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-expired",
+            clientId: "yc.oauth.public-sdk",
+            relogin: null,
+            reloginCommandHint: "yt auth relogin --profile ci");
+
+        var ex = await Assert.ThrowsAsync<TrackerException>(
+            () => provider.GetAuthorizationAsync(CancellationToken.None));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.AuthFailed);
+        await Assert.That(ex.Message).Contains("yt auth relogin --profile ci");
+        await Assert.That(ex.ReloginCommand).IsEqualTo("yt auth relogin --profile ci");
+        await Assert.That(ex.HttpStatus).IsEqualTo(400);
+    }
+
+    [Test]
+    public async Task CachedToken_NeitherRefreshNorReloginInvoked()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new FailingRefresh();
+        var relogin = new FakeReloginHandler(
+            new FederatedTokenResult("should-not-be-used", "rt", DateTimeOffset.UtcNow.AddHours(1)));
+
+        await cache.SetAsync("ci:federated:fed-1", "iam-cached", DateTimeOffset.UtcNow.AddMinutes(30), CancellationToken.None);
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            relogin: relogin,
+            reloginCommandHint: "yt auth relogin --profile ci");
+
+        var h = await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(h.Parameter).IsEqualTo("iam-cached");
+        await Assert.That(refresh.CallCount).IsEqualTo(0);
+        await Assert.That(relogin.CallCount).IsEqualTo(0);
+    }
+
     [Test]
     public async Task Refresh_401WithNonce_RetriesAndSucceeds()
     {

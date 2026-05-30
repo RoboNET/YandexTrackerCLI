@@ -144,6 +144,22 @@ public sealed class FederatedRefreshClient : IFederatedRefreshClient
 }
 
 /// <summary>
+/// Handler that re-runs the federated browser login flow inline (interactive TTY only)
+/// when a token refresh fails because the refresh token is expired/revoked or the bound
+/// key no longer matches. Implementations open the system browser, complete the PKCE+DPoP
+/// flow, persist the new tokens, and return the fresh <see cref="FederatedTokenResult"/>.
+/// </summary>
+public interface IFederatedReloginHandler
+{
+    /// <summary>
+    /// Re-authenticates via the browser and returns freshly issued tokens.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The new <see cref="FederatedTokenResult"/>.</returns>
+    Task<FederatedTokenResult> ReloginAsync(CancellationToken ct);
+}
+
+/// <summary>
 /// <see cref="IAuthProvider"/> for federated user login with DPoP-bound tokens:
 /// serves cached access tokens, and on cache miss signs a DPoP proof and refreshes
 /// against the federated token endpoint. Also publishes a DPoP proof factory on
@@ -156,9 +172,14 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     private readonly ECDsa _key;
     private readonly TokenCache _cache;
     private readonly IFederatedRefreshClient _refresh;
-    private readonly string _refreshToken;
     private readonly string _clientId;
+    private readonly IFederatedReloginHandler? _relogin;
+    private readonly string? _reloginCommandHint;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Mutable refresh token: re-login (interactive auto-recovery) hands us a new one, and a
+    // later refresh in the same process must use it. Only ever read/written under `_gate`.
+    private string _refreshToken;
     private bool _disposed;
 
     /// <summary>
@@ -170,13 +191,25 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     /// <param name="refresh">Refresh client used on cache misses.</param>
     /// <param name="refreshToken">The refresh token (persistent).</param>
     /// <param name="clientId">OAuth public client id.</param>
+    /// <param name="relogin">
+    /// Optional inline re-login handler. When supplied (interactive TTY), a refresh that fails
+    /// with <see cref="ErrorCode.AuthFailed"/> triggers the browser re-login flow instead of
+    /// surfacing the failure; the freshly issued access token is then served.
+    /// </param>
+    /// <param name="reloginCommandHint">
+    /// Optional command hint (e.g. <c>yt auth relogin --profile foo</c>) embedded in the
+    /// <see cref="ErrorCode.AuthFailed"/> error when no <paramref name="relogin"/> handler is
+    /// available (non-interactive), so agents/CI know exactly how to recover.
+    /// </param>
     public FederatedTokenProvider(
         string cacheKey,
         ECDsa key,
         TokenCache cache,
         IFederatedRefreshClient refresh,
         string refreshToken,
-        string clientId)
+        string clientId,
+        IFederatedReloginHandler? relogin = null,
+        string? reloginCommandHint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheKey);
         ArgumentNullException.ThrowIfNull(key);
@@ -191,6 +224,8 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
         _refresh = refresh;
         _refreshToken = refreshToken;
         _clientId = clientId;
+        _relogin = relogin;
+        _reloginCommandHint = reloginCommandHint;
     }
 
     /// <inheritdoc />
@@ -216,7 +251,35 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
                 return new AuthenticationHeaderValue("Bearer", cached.Token);
             }
 
-            var result = await _refresh.Refresh(_refreshToken, _clientId, _key, ct);
+            FederatedTokenResult result;
+            try
+            {
+                result = await _refresh.Refresh(_refreshToken, _clientId, _key, ct);
+            }
+            catch (TrackerException ex) when (ex.Code == ErrorCode.AuthFailed)
+            {
+                if (_relogin is null)
+                {
+                    // Non-interactive: do NOT open a browser. Surface an actionable error that
+                    // names the exact recovery command (also exposed as `relogin_command`).
+                    var hint = _reloginCommandHint ?? "yt auth relogin";
+                    throw new TrackerException(
+                        ErrorCode.AuthFailed,
+                        $"{ex.Message} Re-login (opens browser): {hint}",
+                        httpStatus: ex.HttpStatus,
+                        inner: ex,
+                        reloginCommand: hint);
+                }
+
+                // Interactive TTY: re-run the browser flow inline, adopt the new refresh token
+                // for any later refresh in this process, then serve the fresh access token.
+                result = await _relogin.ReloginAsync(ct);
+                if (!string.IsNullOrEmpty(result.RefreshToken))
+                {
+                    _refreshToken = result.RefreshToken!;
+                }
+            }
+
             await _cache.SetAsync(_cacheKey, result.AccessToken, result.ExpiresAt, ct);
             return new AuthenticationHeaderValue("Bearer", result.AccessToken);
         }

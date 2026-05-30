@@ -1,5 +1,6 @@
 namespace YandexTrackerCLI;
 
+using System.Net.Http;
 using System.Security.Cryptography;
 using Auth.Federated;
 using Core.Api;
@@ -7,6 +8,7 @@ using Core.Api.Errors;
 using YandexTrackerCLI.Core.Auth;
 using Core.Config;
 using Core.Http;
+using Interactive;
 using Output;
 
 /// <summary>
@@ -137,6 +139,22 @@ public static class TrackerContextFactory
     /// <see cref="System.Threading.AsyncLocal{T}"/> to a single test's async context.
     /// </summary>
     internal static readonly AsyncLocal<IFederatedRefreshClient?> TestFederatedRefreshOverride = new();
+
+    /// <summary>
+    /// Test-only override of interactivity detection for the federated auto-relogin decision.
+    /// When set, it takes precedence over <see cref="ConsoleTokenReader.IsInputRedirected"/>:
+    /// <c>true</c> forces interactive (inline browser relogin), <c>false</c> forces
+    /// non-interactive (actionable error with <c>relogin_command</c>). Scoped via
+    /// <see cref="System.Threading.AsyncLocal{T}"/> to a single test's async context.
+    /// </summary>
+    internal static readonly AsyncLocal<bool?> TestInteractiveOverride = new();
+
+    /// <summary>
+    /// Test-only override of the inline federated relogin handler. When set, it is injected
+    /// into the <see cref="FederatedTokenProvider"/> in place of the production handler.
+    /// Scoped via <see cref="System.Threading.AsyncLocal{T}"/> to a single test's async context.
+    /// </summary>
+    internal static readonly AsyncLocal<IFederatedReloginHandler?> TestReloginHandlerOverride = new();
 
     /// <summary>
     /// Builds a <see cref="TrackerContext"/> by loading the config, resolving the effective profile,
@@ -284,13 +302,35 @@ public static class TrackerContextFactory
                             ?? new FederatedRefreshClient(iamHttp);
                         var fedCache = new TokenCache(TokenCache.DefaultPath);
                         var fedCacheKey = $"{eff.Name}:federated:{eff.Auth.FederationId}";
+
+                        // Interactive TTY → auto-recover from a failed refresh by re-running the
+                        // browser flow inline. Non-interactive (agents/CI) → surface an actionable
+                        // error naming the exact recovery command. The relogin hint is always set so
+                        // the failure message names the command regardless of interactivity.
+                        var reloginHint = $"yt auth relogin --profile {eff.Name}";
+                        var interactive = TestInteractiveOverride.Value
+                            ?? !new ConsoleTokenReader().IsInputRedirected;
+
+                        IFederatedReloginHandler? reloginHandler = null;
+                        if (interactive)
+                        {
+                            reloginHandler = TestReloginHandlerOverride.Value
+                                ?? new InlineFederatedReloginHandler(
+                                    eff.Name,
+                                    cliFormat,
+                                    iamHttp,
+                                    wireLogSink);
+                        }
+
                         auth = new FederatedTokenProvider(
                             fedCacheKey,
                             ecdsa,
                             fedCache,
                             refreshClient,
                             eff.Auth.RefreshToken!,
-                            "yc.oauth.public-sdk");
+                            "yc.oauth.public-sdk",
+                            relogin: reloginHandler,
+                            reloginCommandHint: reloginHint);
                         break;
                     }
 
@@ -476,5 +516,60 @@ public static class TrackerContextFactory
             rsa.Dispose();
             throw;
         }
+    }
+}
+
+/// <summary>
+/// Production <see cref="IFederatedReloginHandler"/> used by <see cref="TrackerContextFactory"/>
+/// in interactive (TTY) mode: on a failed refresh it opens the system browser, re-runs the
+/// federated PKCE+DPoP flow for the active profile, persists the new tokens, and returns them.
+/// </summary>
+internal sealed class InlineFederatedReloginHandler : IFederatedReloginHandler
+{
+    private readonly string _profileName;
+    private readonly OutputFormat _cliFormat;
+    private readonly HttpClient _http;
+    private readonly IWireLogSink? _wireLogSink;
+
+    /// <summary>
+    /// Initializes a new <see cref="InlineFederatedReloginHandler"/>.
+    /// </summary>
+    /// <param name="profileName">Active profile name to re-login.</param>
+    /// <param name="cliFormat">CLI <c>--format</c> value used to resolve the interactive UI.</param>
+    /// <param name="http">Shared auxiliary <see cref="HttpClient"/> (reused for the token exchange).</param>
+    /// <param name="wireLogSink">Optional wire-log sink to capture the authorize URL.</param>
+    public InlineFederatedReloginHandler(
+        string profileName,
+        OutputFormat cliFormat,
+        HttpClient http,
+        IWireLogSink? wireLogSink)
+    {
+        _profileName = profileName;
+        _cliFormat = cliFormat;
+        _http = http;
+        _wireLogSink = wireLogSink;
+    }
+
+    /// <inheritdoc />
+    public Task<FederatedTokenResult> ReloginAsync(CancellationToken ct)
+    {
+        var env = EnvReader.Snapshot();
+        var format = FormatResolver.Resolve(
+            _cliFormat,
+            env,
+            profileDefaultFormat: null,
+            isOutputRedirected: Console.IsOutputRedirected);
+        var ui = InteractiveUIResolver.Resolve(format);
+        IBrowserLauncher launcher = FederatedReloginService.TestBrowserLauncher.Value
+            ?? new SystemBrowserLauncher();
+
+        return FederatedReloginService.ReloginAsync(
+            _profileName,
+            launcher,
+            ui,
+            _http,
+            _wireLogSink,
+            TimeSpan.FromSeconds(120),
+            ct);
     }
 }

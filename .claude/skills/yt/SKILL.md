@@ -172,7 +172,28 @@ yt auth login --type oauth --token y0_XXX \
   --org-type yandex360 --org-id <org-id> --profile work
 ```
 
-Federated требует TTY — нельзя из non-interactive окружения. Service-account работает везде.
+Federated `auth login` требует TTY — нельзя из non-interactive окружения. Service-account работает везде.
+
+### Повторный вход (federated DPoP)
+
+Federated-токены DPoP-привязаны и протухают. Когда обновление токена не удаётся:
+
+- **В TTY**: `yt <команда>` сама откроет браузер, выполнит повторный вход и продолжит — ничего делать не нужно.
+- **В non-interactive (агенты, CI, пайпы)**: команда НЕ открывает браузер сама. Возвращает `auth_failed` (exit 4) с полем `relogin_command` — точную команду, которую надо выполнить, чтобы открылся браузер:
+
+```json
+{"error":{"code":"auth_failed","message":"...","relogin_command":"yt auth relogin --profile work"}}
+```
+
+`yt auth relogin` переиспользует сохранённые `federation_id` и DPoP-ключ профиля — НЕ нужно заново указывать `--federation-id`/`--org-*`:
+
+```bash
+yt auth relogin --profile work          # откроет браузер, переавторизует, сохранит токены
+yt auth relogin                          # для default-профиля
+yt auth relogin --profile work --timeout-auth 180
+```
+
+`auth relogin` stdin не читает — её можно вызывать и из non-TTY (браузер всё равно откроется на машине пользователя). Если агент получил `relogin_command` — выполни эту команду (или подскажи пользователю), затем повтори исходную команду.
 
 ## Парсинг JSON ответов
 
@@ -245,3 +266,4 @@ fi
 | Чек-лист | `yt checklist get KEY-N` |
 | Связанные задачи | `yt link list KEY-N` |
 | Доступные переходы | `yt issue transition KEY-N --list` |
+| Повторный вход (federated) | `yt auth relogin --profile <name>` |
