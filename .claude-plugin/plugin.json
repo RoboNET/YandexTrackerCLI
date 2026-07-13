@@ -1,0 +1,11 @@
+{
+  "name": "yt",
+  "description": "Yandex Tracker CLI — работа с Яндекс Трекером (issues, комментарии, worklogs, доски, спринты) через yt. Скил версионируется вместе с CLI.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Mikhail Korolev"
+  },
+  "homepage": "https://github.com/RoboNET/YandexTrackerCLI",
+  "license": "MIT",
+  "skills": "./.claude/skills/"
+}
