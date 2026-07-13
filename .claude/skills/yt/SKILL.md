@@ -17,7 +17,32 @@ description: Use when interacting with Yandex Tracker (Яндекс Трекер
 yt --version
 ```
 
-Если нет — установи из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest), либо из исходников `dotnet publish`. Подробнее в README репозитория.
+Если нет — установи одним из способов (выбери по ОС):
+
+```bash
+# macOS (Apple Silicon) и Linux (x64/arm64) — Homebrew
+brew install RoboNET/yt/yt
+
+# Windows — Scoop
+scoop bucket add yt https://github.com/RoboNET/scoop-yt
+scoop install yt
+```
+
+```powershell
+# Windows без Scoop — PowerShell-инсталлер (yt.exe → %LOCALAPPDATA%\Programs\yt + user PATH)
+irm https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 | iex
+```
+
+Без пакетных менеджеров — готовый бинарь из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest) (архивы: `yt-linux-x64.tar.gz`, `yt-linux-arm64.tar.gz`, `yt-osx-arm64.tar.gz`, `yt-win-x64.zip`):
+
+```bash
+RID=linux-x64   # подставь платформу
+curl -fsSL -o yt.tar.gz "https://github.com/RoboNET/YandexTrackerCLI/releases/latest/download/yt-${RID}.tar.gz"
+tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
+# macOS: если бинарь в карантине — xattr -d com.apple.quarantine /usr/local/bin/yt
+```
+
+Из исходников: `dotnet publish` (см. README репозитория).
 
 ## Базовые правила
 
