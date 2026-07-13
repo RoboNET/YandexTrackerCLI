@@ -541,6 +541,27 @@ Skill содержит шпаргалку команд, exit-коды, патт�
 
 После `brew upgrade yt` рекомендовано запустить `yt skill update` — перезапишет установленные локации актуальной версией. Можно положиться на встроенный auto-check: при первом запуске CLI после апдейта в TTY появится prompt с предложением обновить (выбор `Y`/`n`/`never` запоминается); в pipe выводится один раз JSON-warning в stderr. Отключить: `--no-skill-check` или `YT_SKILL_CHECK=0`.
 
+### Установка skill без CLI — skills.sh и плагин Claude Code
+
+Skill можно поставить и до установки самого `yt`, прямо из репозитория (инструкция по установке бинаря есть внутри skill'а — ассистент доставит его сам при первом использовании).
+
+[skills.sh](https://skills.sh) — универсальный установщик skill'ов для 70+ кодинг-агентов:
+
+```bash
+npx skills add RoboNET/YandexTrackerCLI                                # интерактивный выбор агентов
+npx skills add RoboNET/YandexTrackerCLI -g -a claude-code -a codex -y  # non-interactive / CI
+```
+
+Claude Code дополнительно видит репозиторий как плагин (манифест `.claude-plugin/plugin.json`), поэтому его можно федерировать в любой плагин-маркетплейс записью вида:
+
+```json
+{ "name": "yt", "source": { "source": "github", "repo": "RoboNET/YandexTrackerCLI" } }
+```
+
+и ставить через `/plugin install yt@<marketplace>` — skill будет обновляться вместе с репозиторием.
+
+Канонический способ — всё же `yt skill install`: он штампует версию CLI в маркер `yt-version` и работает с `yt skill status`/`update`/`check`. Копии, установленные через skills.sh в те же пути (`~/.claude/skills/yt/`, `~/.agents/skills/yt/`), содержат неподставленный маркер `{VERSION}`; на работу ассистента это не влияет, но `yt skill status` не сможет определить их актуальность.
+
 ## Сборка из исходников
 
 ```bash
