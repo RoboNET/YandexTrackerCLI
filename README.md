@@ -2,7 +2,7 @@
 
 Кроссплатформенный CLI-клиент для [Яндекс Трекера](https://yandex.ru/support/tracker/ru/api-ref/about-api), собранный через NativeAOT.
 
-- **Один бинарь ~7.5 МБ** — без зависимостей, без рантайма, мгновенный старт.
+- **Один бинарь ~10 МБ** — без зависимостей, без рантайма, мгновенный старт.
 - **Все четыре способа входа** — OAuth (Yandex 360), IAM-static, Service Account, Federated (browser PKCE с DPoP).
 - **JSON-first для AI-агентов** и read-friendly table для человека (auto-detect TTY).
 - **Покрывает почти весь публичный API** — задачи, комментарии, ворклоги, вложения, чек-листы, доски, спринты, проекты, компоненты, версии, поля, справочники.
@@ -109,7 +109,7 @@ xattr -d com.apple.quarantine /usr/local/bin/yt
 
 На Windows распакуйте `yt.exe` из zip и положите в любую папку из `PATH` (или используйте Scoop / `install.ps1` выше).
 
-Размер бинаря в архиве — около 3–4 МБ (распакованный — 7–8 МБ).
+Размер бинаря в архиве — около 4–5 МБ (распакованный — около 10 МБ).
 
 ### Из исходников
 
@@ -540,6 +540,27 @@ Claude / Codex / Gemini получают полный SKILL.md (с YAML frontmat
 Skill содержит шпаргалку команд, exit-коды, паттерны парсинга JSON, правила безопасности (read-only, подтверждение перед mutating). После установки AI-ассистент знает как пользоваться `yt` без подсказок пользователя.
 
 После `brew upgrade yt` рекомендовано запустить `yt skill update` — перезапишет установленные локации актуальной версией. Можно положиться на встроенный auto-check: при первом запуске CLI после апдейта в TTY появится prompt с предложением обновить (выбор `Y`/`n`/`never` запоминается); в pipe выводится один раз JSON-warning в stderr. Отключить: `--no-skill-check` или `YT_SKILL_CHECK=0`.
+
+### Установка skill без CLI — skills.sh и плагин Claude Code
+
+Skill можно поставить и до установки самого `yt`, прямо из репозитория (инструкция по установке бинаря есть внутри skill'а — ассистент доставит его сам при первом использовании).
+
+[skills.sh](https://skills.sh) — универсальный установщик skill'ов для 70+ кодинг-агентов:
+
+```bash
+npx skills add RoboNET/YandexTrackerCLI                                # интерактивный выбор агентов
+npx skills add RoboNET/YandexTrackerCLI -g -a claude-code -a codex -y  # non-interactive / CI
+```
+
+Claude Code дополнительно видит репозиторий как плагин (манифест `.claude-plugin/plugin.json`), поэтому его можно федерировать в любой плагин-маркетплейс записью вида:
+
+```json
+{ "name": "yt", "source": { "source": "github", "repo": "RoboNET/YandexTrackerCLI" } }
+```
+
+и ставить через `/plugin install yt@<marketplace>` — skill будет обновляться вместе с репозиторием.
+
+Канонический способ — всё же `yt skill install`: он штампует версию CLI в маркер `yt-version` и работает с `yt skill status`/`update`/`check`. Копии, установленные через skills.sh в те же пути (`~/.claude/skills/yt/`, `~/.agents/skills/yt/`), содержат неподставленный маркер `{VERSION}`; на работу ассистента это не влияет, но `yt skill status` не сможет определить их актуальность.
 
 ## Сборка из исходников
 

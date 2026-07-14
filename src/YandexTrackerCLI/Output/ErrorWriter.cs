@@ -15,8 +15,9 @@ public static class ErrorWriter
             w.WriteStartObject("error");
             w.WriteString("code", err.Code);
             w.WriteString("message", err.Message);
-            if (err.HttpStatus is { } s) w.WriteNumber("http_status", s);
-            if (err.TraceId is { } t)    w.WriteString("trace_id", t);
+            if (err.HttpStatus is { } s)       w.WriteNumber("http_status", s);
+            if (err.TraceId is { } t)          w.WriteString("trace_id", t);
+            if (err.ReloginCommand is { } r)   w.WriteString("relogin_command", r);
             w.WriteEndObject();
             w.WriteEndObject();
         }

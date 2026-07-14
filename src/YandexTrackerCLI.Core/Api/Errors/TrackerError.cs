@@ -4,4 +4,5 @@ public sealed record TrackerError(
     string Code,
     string Message,
     int? HttpStatus = null,
-    string? TraceId = null);
+    string? TraceId = null,
+    string? ReloginCommand = null);

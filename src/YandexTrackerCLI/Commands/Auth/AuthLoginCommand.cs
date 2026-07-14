@@ -197,7 +197,10 @@ public static class AuthLoginCommand
                 {
                     // Federated success-marker carries `mode` so callers can distinguish
                     // full DPoP-bound (with auto-refresh) from access-only fallback.
-                    WriteFederatedSavedMarker(profileName, auth);
+                    WriteFederatedSavedMarker(
+                        profileName,
+                        hasRefreshToken: !string.IsNullOrEmpty(auth.RefreshToken),
+                        auth.AccessTokenExpiresAt);
                 }
                 else
                 {
@@ -447,7 +450,7 @@ public static class AuthLoginCommand
     /// JSON parsers (jq, agents) can consume it: a single object with a top-level
     /// <c>warning</c> key and stable fields under it.
     /// </summary>
-    private static void WriteNoRefreshTokenWarning(string accessTokenExpiresAtIso)
+    internal static void WriteNoRefreshTokenWarning(string accessTokenExpiresAtIso)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -470,11 +473,26 @@ public static class AuthLoginCommand
     /// Emits the federated-login success-marker on <see cref="Console.Out"/>:
     /// <c>{"saved":"&lt;profile&gt;","mode":"federated|federated_static","access_token_expires_at":"..."}</c>.
     /// </summary>
+    /// <remarks>
+    /// The marker only reflects how the session will refresh (presence of a refresh token)
+    /// and when the current access token expires — it does not re-persist anything. The
+    /// authoritative profile (federation_id, DPoP key, tokens) is written by the caller
+    /// before this is invoked.
+    /// </remarks>
     /// <param name="profileName">Profile that was just persisted.</param>
-    /// <param name="auth">The auth config that was just saved (carries refresh-presence + expiry).</param>
-    private static void WriteFederatedSavedMarker(string profileName, AuthConfig auth)
+    /// <param name="hasRefreshToken">
+    /// Whether a refresh token was issued. Drives <c>mode</c>: <c>federated</c> (auto-refresh)
+    /// vs <c>federated_static</c> (access-only, manual re-login after expiry).
+    /// </param>
+    /// <param name="accessTokenExpiresAtIso">
+    /// ISO-8601 expiry of the current access token, or <c>null</c> to omit the field.
+    /// </param>
+    internal static void WriteFederatedSavedMarker(
+        string profileName,
+        bool hasRefreshToken,
+        string? accessTokenExpiresAtIso)
     {
-        var mode = string.IsNullOrEmpty(auth.RefreshToken) ? "federated_static" : "federated";
+        var mode = hasRefreshToken ? "federated" : "federated_static";
 
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -482,9 +500,9 @@ public static class AuthLoginCommand
             w.WriteStartObject();
             w.WriteString("saved", profileName);
             w.WriteString("mode", mode);
-            if (!string.IsNullOrEmpty(auth.AccessTokenExpiresAt))
+            if (!string.IsNullOrEmpty(accessTokenExpiresAtIso))
             {
-                w.WriteString("access_token_expires_at", auth.AccessTokenExpiresAt);
+                w.WriteString("access_token_expires_at", accessTokenExpiresAtIso);
             }
             w.WriteEndObject();
         }
