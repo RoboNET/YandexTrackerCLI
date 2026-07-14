@@ -16,7 +16,7 @@ public sealed class SuggestCommandTests
     public async Task BuildSuggestPath_AsciiInput_NoQueue()
     {
         var path = SuggestCommand.BuildSuggestPath("fix bug", null);
-        await Assert.That(path).IsEqualTo("issues/_suggest?input=fix%20bug");
+        await Assert.That(path).IsEqualTo("issues/_suggest?input=fix%20bug&full=true");
     }
 
     /// <summary>
@@ -27,7 +27,7 @@ public sealed class SuggestCommandTests
     public async Task BuildSuggestPath_CyrillicInput_WithQueue()
     {
         var path = SuggestCommand.BuildSuggestPath("тест", "DEV");
-        await Assert.That(path).IsEqualTo("issues/_suggest?input=%D1%82%D0%B5%D1%81%D1%82&queue=DEV");
+        await Assert.That(path).IsEqualTo("issues/_suggest?input=%D1%82%D0%B5%D1%81%D1%82&queue=DEV&full=true");
     }
 
     /// <summary>
@@ -38,6 +38,6 @@ public sealed class SuggestCommandTests
     public async Task BuildSuggestPath_EmptyInput()
     {
         var path = SuggestCommand.BuildSuggestPath(string.Empty, null);
-        await Assert.That(path).IsEqualTo("issues/_suggest?input=");
+        await Assert.That(path).IsEqualTo("issues/_suggest?input=&full=true");
     }
 }

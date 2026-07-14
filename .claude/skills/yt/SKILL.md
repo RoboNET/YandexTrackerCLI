@@ -144,7 +144,17 @@ yt issue create --queue TECH --summary "Bug in login" \
 yt issue update TECH-1 --summary "Updated" --priority normal
 yt issue transition TECH-1 --list                 # доступные переходы
 yt issue transition TECH-1 --to in_progress       # выполнить
+
+yt issue changelog TECH-1                          # история изменений (JSON-массив)
+yt issue changelog TECH-1 --stream | jq -r '.id'  # NDJSON, по записи на строку
+yt issue changelog TECH-1 --per-page 200 --max 500 # размер страницы / лимит записей
 ```
+
+`yt issue changelog KEY-N` — GET `/v3/issues/{key}/changelog`, read-only, удобно для
+анализа cycle time (время по статусам). Опции: `--per-page` (default 100, размер
+страницы), `--max` (default 10000, лимит записей), `--stream` (NDJSON вместо
+JSON-массива). Пагинация курсорная (заголовок `Link`, `rel="next"`): выгружается полная
+история независимо от `--per-page`, ограничение только по `--max`.
 
 ### Справочники и метаданные
 
@@ -291,4 +301,5 @@ fi
 | Чек-лист | `yt checklist get KEY-N` |
 | Связанные задачи | `yt link list KEY-N` |
 | Доступные переходы | `yt issue transition KEY-N --list` |
+| История изменений | `yt issue changelog KEY-N` (GET, для cycle time) |
 | Повторный вход (federated) | `yt auth relogin --profile <name>` |
