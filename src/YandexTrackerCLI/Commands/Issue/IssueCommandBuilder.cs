@@ -20,6 +20,7 @@ public static class IssueCommandBuilder
         cmd.Subcommands.Add(IssueCreateCommand.Build());
         cmd.Subcommands.Add(IssueUpdateCommand.Build());
         cmd.Subcommands.Add(IssueTransitionCommand.Build());
+        cmd.Subcommands.Add(IssueChangelogCommand.Build());
         cmd.Subcommands.Add(IssueMoveCommand.Build());
         cmd.Subcommands.Add(IssueDeleteCommand.Build());
         cmd.Subcommands.Add(IssueBatchCommand.Build());

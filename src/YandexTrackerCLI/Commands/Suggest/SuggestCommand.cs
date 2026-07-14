@@ -108,11 +108,12 @@ public static class SuggestCommand
     internal static string BuildSuggestPath(string input, string? queue)
     {
         var encodedInput = Uri.EscapeDataString(input);
+        const string fields = "&full=true";
         if (string.IsNullOrEmpty(queue))
         {
-            return $"issues/_suggest?input={encodedInput}";
+            return $"issues/_suggest?input={encodedInput}{fields}";
         }
-        return $"issues/_suggest?input={encodedInput}&queue={Uri.EscapeDataString(queue)}";
+        return $"issues/_suggest?input={encodedInput}&queue={Uri.EscapeDataString(queue)}{fields}";
     }
 
     /// <summary>
@@ -132,6 +133,7 @@ public static class SuggestCommand
         private int _selectedIndex;
         private JsonElement[] _results = Array.Empty<JsonElement>();
         private string? _errorText;
+        private bool _isSearching;
         private CancellationTokenSource? _debounceCts;
         private long _requestVersion;
         private readonly ConcurrentQueue<Action> _pendingUpdates = new();
@@ -164,19 +166,36 @@ public static class SuggestCommand
                             ScheduleFetch(ct);
                         }
                         DrainPendingUpdates();
+                        // Initial render so the empty prompt + footer show immediately.
                         live.UpdateTarget(BuildPanel());
 
+                        Task<ConsoleKeyInfo>? readKeyTask = null;
                         while (!done && !ct.IsCancellationRequested)
                         {
                             // Console.ReadKey блокирующий; читаем в отдельной таске,
                             // чтобы не мешать debounced-фетчам обновлять Live.
                             // ReadKey is not cancellable; relies on process exit on Ctrl+C.
-                            var keyTask = Task.Run(() => Console.ReadKey(intercept: true), ct);
-                            var key = await keyTask;
+                            readKeyTask ??= Task.Run(() => Console.ReadKey(intercept: true), ct);
 
                             // Drain any state mutations queued by background fetches before
-                            // reading shared state — keeps mutation single-threaded on this loop.
-                            DrainPendingUpdates();
+                            // possibly waiting — keeps Live in sync with background fetches
+                            // even when the user isn't pressing keys.
+                            if (DrainPendingUpdates())
+                            {
+                                live.UpdateTarget(BuildPanel());
+                            }
+
+                            // Wait for either a key or a short tick (so background updates
+                            // surface within ~80ms even without a keypress).
+                            var winner = await Task.WhenAny(readKeyTask, Task.Delay(80, ct));
+                            if (winner != readKeyTask)
+                            {
+                                // Timer tick — loop back, drain & render again.
+                                continue;
+                            }
+
+                            var key = await readKeyTask;
+                            readKeyTask = null;
 
                             switch (key.Key)
                             {
@@ -247,12 +266,17 @@ public static class SuggestCommand
         /// <see cref="_results"/>/<see cref="_selectedIndex"/>/<see cref="_errorText"/>
         /// single-threaded.
         /// </summary>
-        private void DrainPendingUpdates()
+        /// <returns><c>true</c> if any mutation was applied; otherwise <c>false</c>.
+        /// Used by the main loop to skip unnecessary redraws on idle ticks.</returns>
+        private bool DrainPendingUpdates()
         {
+            var any = false;
             while (_pendingUpdates.TryDequeue(out var action))
             {
                 action();
+                any = true;
             }
+            return any;
         }
 
         private void ScheduleFetch(CancellationToken outerCt)
@@ -283,9 +307,12 @@ public static class SuggestCommand
                             _results = Array.Empty<JsonElement>();
                             _selectedIndex = 0;
                             _errorText = null;
+                            _isSearching = false;
                         });
                         return;
                     }
+
+                    EnqueueIfCurrent(version, () => _isSearching = true);
 
                     var path = BuildSuggestPath(bufferSnapshot, _queue);
                     var payload = await _client.GetAsync(path, cts.Token);
@@ -315,6 +342,7 @@ public static class SuggestCommand
                                 ? 0
                                 : Math.Min(_selectedIndex, _results.Length - 1);
                             _errorText = null;
+                            _isSearching = false;
                         });
                     }
                     else
@@ -323,21 +351,30 @@ public static class SuggestCommand
                         {
                             _results = Array.Empty<JsonElement>();
                             _selectedIndex = 0;
+                            _isSearching = false;
                         });
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    // Debounce reset — нормальное поведение.
+                    // Debounce reset — нормальное поведение. Новый запрос выставит свой флаг.
                 }
                 catch (TrackerException ex)
                 {
-                    EnqueueIfCurrent(version, () => _errorText = ex.Message);
+                    EnqueueIfCurrent(version, () =>
+                    {
+                        _errorText = ex.Message;
+                        _isSearching = false;
+                    });
                 }
                 catch (Exception ex)
                 {
                     // M3: surface unexpected errors instead of silently breaking suggestions.
-                    EnqueueIfCurrent(version, () => _errorText = ex.Message);
+                    EnqueueIfCurrent(version, () =>
+                    {
+                        _errorText = ex.Message;
+                        _isSearching = false;
+                    });
                 }
                 finally
                 {
@@ -382,19 +419,17 @@ public static class SuggestCommand
             else
             {
                 var table = new Table().Border(TableBorder.Minimal).Expand();
-                table.AddColumn("Key");
-                table.AddColumn("Summary");
-                table.AddColumn("Status");
-                table.AddColumn("Assignee");
+                table.AddColumn(new TableColumn("Key").NoWrap());
+                table.AddColumn(new TableColumn("Summary"));
+                table.AddColumn(new TableColumn("Status").NoWrap());
+                table.AddColumn(new TableColumn("Assignee").NoWrap());
                 for (var i = 0; i < _results.Length; i++)
                 {
                     var item = _results[i];
                     var key = ReadString(item, "key") ?? "?";
-                    var summary = ReadString(item, "summary") ?? string.Empty;
-                    var status = ReadNested(item, "status", "display")
-                                 ?? ReadNested(item, "status", "key")
-                                 ?? string.Empty;
-                    var assignee = ReadNested(item, "assignee", "display") ?? string.Empty;
+                    var summary = FirstLine(ReadString(item, "summary") ?? string.Empty);
+                    var status = ReadDisplayLike(item, "status");
+                    var assignee = ReadDisplayLike(item, "assignee");
 
                     var selected = i == _selectedIndex;
                     table.AddRow(
@@ -409,6 +444,11 @@ public static class SuggestCommand
             if (_errorText is not null)
             {
                 grid.AddRow(new Markup($"[red]{Markup.Escape(_errorText)}[/]"));
+            }
+
+            if (_isSearching)
+            {
+                grid.AddRow(new Markup("[yellow]⏳ Поиск…[/]"));
             }
 
             grid.AddRow(new Markup("[dim]↑↓ navigate · Enter pick · Esc cancel[/]"));
@@ -426,6 +466,15 @@ public static class SuggestCommand
                 : new Markup($"[{color}]{escaped}[/]");
         }
 
+        private static string FirstLine(string text, int maxLen = 100)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            var nl = text.IndexOfAny(new[] { '\r', '\n' });
+            var line = nl >= 0 ? text.Substring(0, nl) : text;
+            if (line.Length > maxLen) line = line.Substring(0, maxLen - 1) + "…";
+            return line;
+        }
+
         private static string? ReadString(JsonElement el, string prop)
         {
             if (el.ValueKind != JsonValueKind.Object) return null;
@@ -433,11 +482,20 @@ public static class SuggestCommand
             return v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         }
 
-        private static string? ReadNested(JsonElement el, string parent, string child)
+        private static string ReadDisplayLike(JsonElement el, string prop)
         {
-            if (el.ValueKind != JsonValueKind.Object) return null;
-            if (!el.TryGetProperty(parent, out var p)) return null;
-            return ReadString(p, child);
+            if (el.ValueKind != JsonValueKind.Object) return string.Empty;
+            if (!el.TryGetProperty(prop, out var v)) return string.Empty;
+            if (v.ValueKind == JsonValueKind.String) return v.GetString() ?? string.Empty;
+            if (v.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var name in new[] { "display", "name", "key", "id" })
+                {
+                    if (v.TryGetProperty(name, out var inner) && inner.ValueKind == JsonValueKind.String)
+                        return inner.GetString() ?? string.Empty;
+                }
+            }
+            return string.Empty;
         }
     }
 }
