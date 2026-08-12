@@ -337,10 +337,20 @@ yt attachment list TECH-1
 yt attachment upload TECH-1 ./screenshot.png
 yt attachment download TECH-1 12345 --out ./out.png
 yt attachment download TECH-1 12345 --force          # перезаписать
+yt attachment download TECH-1 12345 --out -          # в stdout (pipe)
 yt attachment delete TECH-1 12345
 ```
 
 Скачивание и загрузка — потоковые (не держат файл в памяти).
+
+С `--out -` вложение стримится в stdout: там оказываются только байты файла, сводка
+`downloaded <n> bytes` уходит в stderr. `--out - --force` отвергается (exit 2).
+Обрыв пайпа потребителем (`| head -c 100`) — единственный штатный случай досрочной
+остановки: exit 0, но stderr помечает передачу как
+`downloaded <n> bytes (truncated: consumer closed the pipe)`. Любая другая I/O-ошибка —
+оборванное тело ответа, ошибка записи в stdout (например ENOSPC при `> file`) или тело
+короче объявленного `Content-Length` — даёт `network_error` (exit 8): усечённые данные
+никогда не выдаются за успех. Файл с именем `-` сохраняется как `--out ./-`.
 
 ### Чек-листы
 

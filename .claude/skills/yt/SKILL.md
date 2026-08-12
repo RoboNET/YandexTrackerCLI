@@ -121,6 +121,20 @@ yt attachment list TECH-146
 yt attachment download TECH-146 12345 --out ./screenshot.png
 ```
 
+`--out -` (ровно один дефис) стримит вложение в stdout вместо записи на диск:
+
+```bash
+yt attachment download TECH-146 12345 --out - | head -c 100 | xxd
+yt attachment download TECH-146 12345 --out - > ./screenshot.png
+```
+
+- stdout содержит **только байты вложения** — JSON-сводка `{"downloaded":…,"bytes":…}` в этом режиме не печатается;
+- краткая диагностика уходит в stderr строкой `downloaded <n> bytes`;
+- `--out - --force` — ошибка `invalid_args` (exit 2): stdout нечего перезаписывать;
+- обрыв пайпа потребителем (`| head -c 100`) — штатный исход: exit 0, в stderr `downloaded <n> bytes (truncated: consumer closed the pipe)`;
+- любая другая I/O-ошибка — `network_error` (exit 8), а не тихий exit 0: оборванное тело HTTP-ответа, ошибка записи в stdout (например ENOSPC при `> file`), тело короче объявленного `Content-Length`. Усечённые данные никогда не выдаются за успех — по exit 0 без пометки `truncated` поток гарантированно полный;
+- файл, который реально называется `-`, сохраняется как `--out ./-` (одиночный дефис всегда означает stdout).
+
 Загрузка/удаление — mutating:
 
 ```bash
@@ -298,6 +312,7 @@ fi
 | Комменты задачи | `yt comment list KEY-N` |
 | Вложения | `yt attachment list KEY-N` |
 | Скачать вложение | `yt attachment download KEY-N <id> --out ./file` |
+| Вложение в pipe | `yt attachment download KEY-N <id> --out -` (stdout = только байты) |
 | Чек-лист | `yt checklist get KEY-N` |
 | Связанные задачи | `yt link list KEY-N` |
 | Доступные переходы | `yt issue transition KEY-N --list` |
