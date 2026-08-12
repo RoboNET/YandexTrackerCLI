@@ -151,4 +151,174 @@ public sealed class AuthLoginCommandTests
 
         await Assert.That(exit).IsEqualTo(2);
     }
+
+    /// <summary>
+    /// Глобальный флаг <c>--read-only</c> при <c>auth login</c> записывается в профиль:
+    /// профиль для автоматики сразу заводится только на чтение (issue #13).
+    /// </summary>
+    [Test]
+    [Arguments("oauth")]
+    [Arguments("iam-static")]
+    public async Task Login_WithReadOnlyFlag_StoresReadOnlyProfile(string type)
+    {
+        using var env = new TestEnv();
+        env.SetConfig("""{"default_profile":"default","profiles":{}}""");
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[]
+            {
+                "--profile", "ci", "--read-only",
+                "auth", "login", "--type", type, "--token", "y0_X",
+                "--org-type", "cloud", "--org-id", "o1",
+            },
+            sw,
+            er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        await Assert.That(saved.RootElement.GetProperty("profiles").GetProperty("ci")
+            .GetProperty("read_only").GetBoolean()).IsTrue();
+    }
+
+    /// <summary>
+    /// Service-account профиль тоже поддерживает <c>--read-only</c>.
+    /// </summary>
+    [Test]
+    public async Task Login_ServiceAccount_WithReadOnlyFlag_StoresReadOnlyProfile()
+    {
+        using var env = new TestEnv();
+        env.SetConfig("""{"default_profile":"default","profiles":{}}""");
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[]
+            {
+                "--profile", "ci", "--read-only",
+                "auth", "login", "--type", "service-account",
+                "--sa-id", "aje1", "--key-id", "ajk1", "--key-pem", "PEM",
+                "--org-type", "cloud", "--org-id", "o1",
+            },
+            sw,
+            er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var ci = saved.RootElement.GetProperty("profiles").GetProperty("ci");
+        await Assert.That(ci.GetProperty("read_only").GetBoolean()).IsTrue();
+        await Assert.That(ci.GetProperty("auth").GetProperty("type").GetString()).IsEqualTo("service-account");
+    }
+
+    /// <summary>
+    /// Login в существующий профиль пересоздаёт его: политики берутся только из флагов
+    /// текущего вызова, поэтому <c>read_only</c>, <c>allowed_queues</c> и
+    /// <c>allowed_write_issues</c> сбрасываются. Это заявленный путь сброса политики —
+    /// доступный лишь тому, у кого есть сами креденшелы. <c>default_format</c>
+    /// (настройка вывода, не граница доступа) переносится.
+    /// </summary>
+    [Test]
+    public async Task Login_IntoExistingProfile_ResetsProfilePolicies()
+    {
+        using var env = new TestEnv();
+        env.SetConfig("""
+        {
+          "default_profile":"ci",
+          "profiles":{"ci":{"org_type":"cloud","org_id":"o","read_only":true,
+                            "default_format":"json",
+                            "allowed_queues":["DEV"],
+                            "allowed_write_issues":["DEV-1"],
+                            "auth":{"type":"oauth","token":"old"}}}
+        }
+        """);
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[]
+            {
+                "--profile", "ci",
+                "auth", "login", "--type", "oauth", "--token", "y0_NEW",
+                "--org-type", "cloud", "--org-id", "o1",
+            },
+            sw,
+            er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var ci = saved.RootElement.GetProperty("profiles").GetProperty("ci");
+        await Assert.That(ci.GetProperty("auth").GetProperty("token").GetString()).IsEqualTo("y0_NEW");
+        await Assert.That(ci.GetProperty("read_only").GetBoolean()).IsFalse();
+        await Assert.That(ci.TryGetProperty("allowed_queues", out var q) && q.ValueKind != JsonValueKind.Null)
+            .IsFalse();
+        await Assert.That(ci.TryGetProperty("allowed_write_issues", out var w) && w.ValueKind != JsonValueKind.Null)
+            .IsFalse();
+        await Assert.That(ci.GetProperty("default_format").GetString()).IsEqualTo("json");
+    }
+
+    /// <summary>
+    /// Сброс через login — это именно пересоздание профиля: после него ограниченный
+    /// профиль снова ходит в любую очередь, а <c>--read-only</c> при том же вызове
+    /// заводит профиль только на чтение.
+    /// </summary>
+    [Test]
+    public async Task Login_IntoExistingProfile_WithReadOnlyFlag_ReCreatesProfileAsReadOnly()
+    {
+        using var env = new TestEnv();
+        env.SetConfig("""
+        {
+          "default_profile":"ci",
+          "profiles":{"ci":{"org_type":"cloud","org_id":"o","read_only":false,
+                            "allowed_queues":["DEV"],
+                            "auth":{"type":"oauth","token":"old"}}}
+        }
+        """);
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[]
+            {
+                "--profile", "ci", "--read-only",
+                "auth", "login", "--type", "oauth", "--token", "y0_NEW",
+                "--org-type", "cloud", "--org-id", "o1",
+            },
+            sw,
+            er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var ci = saved.RootElement.GetProperty("profiles").GetProperty("ci");
+        await Assert.That(ci.GetProperty("read_only").GetBoolean()).IsTrue();
+        await Assert.That(ci.TryGetProperty("allowed_queues", out var q) && q.ValueKind != JsonValueKind.Null)
+            .IsFalse();
+    }
+
+    /// <summary>
+    /// <c>--read-only</c> — глобальная (recursive) опция, поэтому принимается и после
+    /// подкоманды: <c>yt auth login ... --read-only</c> эквивалентно <c>yt --read-only auth login ...</c>.
+    /// </summary>
+    [Test]
+    public async Task Login_ReadOnlyFlag_AfterSubcommand_IsAccepted()
+    {
+        using var env = new TestEnv();
+        env.SetConfig("""{"default_profile":"default","profiles":{}}""");
+        var sw = new StringWriter();
+        var er = new StringWriter();
+
+        var exit = await env.Invoke(
+            new[]
+            {
+                "auth", "login", "--profile", "ci", "--type", "oauth", "--token", "y0_X",
+                "--org-type", "cloud", "--org-id", "o1", "--read-only",
+            },
+            sw,
+            er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        await Assert.That(saved.RootElement.GetProperty("profiles").GetProperty("ci")
+            .GetProperty("read_only").GetBoolean()).IsTrue();
+    }
 }

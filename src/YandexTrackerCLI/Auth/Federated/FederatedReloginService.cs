@@ -135,7 +135,11 @@ public static class FederatedReloginService
         var expiresAtIso = result.ExpiresAt.ToUniversalTime().ToString("O");
 
         // Persist ONLY this profile's auth; everything else (other profiles, default_profile,
-        // org settings, read_only, default_format) is preserved verbatim.
+        // org settings, read_only, allowed_queues, allowed_write_issues, default_format) is
+        // preserved verbatim. The `with`-expression is load-bearing: a positional constructor
+        // call would silently drop any profile field added later, and for the policy fields
+        // that means a restricted profile losing its restrictions mid-session — re-login also
+        // happens automatically when a DPoP refresh fails.
         var newAuth = new AuthConfig(
             AuthType.Federated,
             Token: result.AccessToken,
@@ -146,12 +150,7 @@ public static class FederatedReloginService
 
         var profiles = new Dictionary<string, Profile>(cfg.Profiles)
         {
-            [profileName] = new Profile(
-                profile.OrgType,
-                profile.OrgId,
-                profile.ReadOnly,
-                newAuth,
-                profile.DefaultFormat),
+            [profileName] = profile with { Auth = newAuth },
         };
         await store.SaveAsync(new ConfigFile(cfg.DefaultProfile, profiles), ct);
 

@@ -40,7 +40,15 @@ public static class LinkListCommand
                 var result = await ctx.Client.GetAsync(
                     $"issues/{Uri.EscapeDataString(key)}/links",
                     ct);
-                JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat, pretty: !Console.IsOutputRedirected);
+
+                // Запрос адресован разрешённой задаче, но её связи перечисляют задачи любых
+                // очередей вместе с темами и статусами — вырезаем чужие из вывода.
+                using var filtered = QueueScopeFilter.FilterLinkArray(result, ctx.Profile.AllowedQueues);
+                JsonWriter.Write(
+                    Console.Out,
+                    filtered?.RootElement ?? result,
+                    ctx.EffectiveOutputFormat,
+                    pretty: !Console.IsOutputRedirected);
                 return 0;
             }
             catch (TrackerException ex)

@@ -11,7 +11,7 @@ public static class EnvReader
         "YT_PROFILE", "YT_OAUTH_TOKEN", "YT_IAM_TOKEN",
         "YT_SERVICE_ACCOUNT_ID", "YT_SERVICE_ACCOUNT_KEY_ID",
         "YT_SERVICE_ACCOUNT_KEY_FILE", "YT_SERVICE_ACCOUNT_KEY_PEM",
-        "YT_ORG_TYPE", "YT_ORG_ID", "YT_READ_ONLY", "YT_CONFIG_PATH",
+        "YT_ORG_TYPE", "YT_ORG_ID", "YT_READ_ONLY", "YT_ALLOWED_WRITE_ISSUES", "YT_CONFIG_PATH",
         "YT_API_BASE_URL", "YT_TIMEOUT", "YT_NO_COLOR",
         "YT_FORMAT",
         // Terminal capabilities (markdown rendering, hyperlinks, pager).

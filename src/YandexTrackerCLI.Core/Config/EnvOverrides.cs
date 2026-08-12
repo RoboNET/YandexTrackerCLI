@@ -91,13 +91,51 @@ public static class EnvOverrides
         var envRo = ParseBool(Trimmed(env, "YT_READ_ONLY"));
         var readOnly = cliReadOnly || envRo || (baseProfile?.ReadOnly ?? false);
 
+        // allowed_queues намеренно не имеет env-override: это свойство самих креденшелов,
+        // а переменная окружения так же управляема вызывающим, как и флаг командной строки.
+        var allowedQueues = QueuePolicy.Normalize(baseProfile?.AllowedQueues);
+
+        // allowed_write_issues, наоборот, env-override имеет: в CI задача каждый раз своя,
+        // и список приходится задавать на запуск. Env ЗАМЕНЯЕТ значение профиля (не
+        // пересекается с ним) — то есть вызывающий, управляющий окружением, может ослабить
+        // эту политику, в отличие от read_only и allowed_queues. Это осознанный размен
+        // гибкости на строгость, зафиксированный в документации.
+        var envWriteIssues = Trimmed(env, "YT_ALLOWED_WRITE_ISSUES");
+        string[] allowedWriteIssues;
+        if (envWriteIssues is not null)
+        {
+            allowedWriteIssues = IssueWritePolicy.ParseList(envWriteIssues);
+            if (allowedWriteIssues.Length == 0)
+            {
+                // Значение задано (непустое после Trim), но ни одного ключа из него не
+                // получилось — например "," или ",,". Молча трактовать это как «ограничения
+                // нет» нельзя: так опечатка в разделителях снимала бы политику профиля.
+                throw new TrackerException(
+                    ErrorCode.ConfigError,
+                    $"YT_ALLOWED_WRITE_ISSUES is set to '{envWriteIssues}', which contains no issue keys. "
+                    + "Pass a comma-separated list (e.g. 'DEV-42,DEV-43'), or unset the variable "
+                    + "to fall back to the profile's allowed_write_issues.");
+            }
+        }
+        else
+        {
+            allowedWriteIssues = IssueWritePolicy.Normalize(baseProfile?.AllowedWriteIssues);
+        }
+
+        // Источник = env ровно тогда, когда значение пришло из переменной: пустых списков
+        // из env больше не бывает (см. проверку выше), поэтому признак честен во всех случаях.
+        var writeIssuesFromEnv = envWriteIssues is not null;
+
         return new EffectiveProfile(
             name,
             orgType.Value,
             orgId,
             readOnly,
             auth,
-            DefaultFormat: baseProfile?.DefaultFormat);
+            DefaultFormat: baseProfile?.DefaultFormat,
+            AllowedQueues: allowedQueues,
+            AllowedWriteIssues: allowedWriteIssues,
+            AllowedWriteIssuesFromEnv: writeIssuesFromEnv);
     }
 
     private static string? Trimmed(IReadOnlyDictionary<string, string?> env, string key)

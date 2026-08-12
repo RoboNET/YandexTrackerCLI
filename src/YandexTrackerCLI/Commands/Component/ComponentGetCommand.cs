@@ -32,9 +32,12 @@ public static class ComponentGetCommand
                     cliFormat: parseResult.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
                 var id = parseResult.GetValue(idArg)!;
-                var result = await ctx.Client.GetAsync(
-                    $"components/{Uri.EscapeDataString(id)}",
-                    ct);
+                // Компонент адресуется идентификатором, очереди в URL нет — при действующем
+                // allowed_queues доспрашиваем владельца и сверяем со списком. Полученное
+                // представление и есть ответ команды, второй запрос не нужен.
+                var result = await QueueScopeFilter.EnsureResourceQueueAllowed(
+                        ctx.Client, "components", id, ctx.Profile, ct)
+                    ?? await ctx.Client.GetAsync($"components/{Uri.EscapeDataString(id)}", ct);
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat, pretty: !Console.IsOutputRedirected);
                 return 0;
             }

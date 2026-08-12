@@ -48,6 +48,10 @@ public static class VersionDeleteCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
+                // Очереди в URL нет — при действующем allowed_queues доспрашиваем владельца.
+                await QueueScopeFilter.EnsureResourceQueueAllowed(
+                    ctx.Client, "versions", id, ctx.Profile, ct);
+
                 var result = await ctx.Client.DeleteAsync(
                     $"versions/{Uri.EscapeDataString(id)}",
                     ct);

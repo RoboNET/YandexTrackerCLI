@@ -96,6 +96,10 @@ public static class ComponentUpdateCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
+                // Очереди в URL нет — при действующем allowed_queues доспрашиваем владельца.
+                await QueueScopeFilter.EnsureResourceQueueAllowed(
+                    ctx.Client, "components", id, ctx.Profile, ct);
+
                 var result = await ctx.Client.PatchJsonAsync(
                     $"components/{Uri.EscapeDataString(id)}",
                     body,

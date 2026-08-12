@@ -49,6 +49,13 @@ public static class QueueListCommand
                     var count = 0;
                     await foreach (var el in ctx.Client.GetPagedAsync("queues", ct: ct))
                     {
+                        // Очереди вне allowed_queues вырезаются из выдачи: --max считает
+                        // элементы, реально попавшие в вывод.
+                        if (!QueueScopeFilter.AllowsQueue(el, ctx.Profile.AllowedQueues))
+                        {
+                            continue;
+                        }
+
                         el.WriteTo(w);
                         if (++count >= max)
                         {

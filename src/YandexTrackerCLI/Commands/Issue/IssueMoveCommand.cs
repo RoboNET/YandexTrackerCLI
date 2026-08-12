@@ -52,13 +52,16 @@ public static class IssueMoveCommand
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --to-queue <QUEUE> or --json-file/--json-stdin.");
 
+                string? targetQueue;
                 using (var doc = JsonDocument.Parse(body))
                 {
-                    if (!doc.RootElement.TryGetProperty("queue", out _))
+                    if (!doc.RootElement.TryGetProperty("queue", out var queueEl))
                     {
                         throw new TrackerException(ErrorCode.InvalidArgs,
                             "Effective body must include 'queue'.");
                     }
+
+                    targetQueue = QueueScopeFilter.ReadQueueKeyFromJson(queueEl);
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -69,6 +72,10 @@ public static class IssueMoveCommand
                     wireLogMask: !pr.GetValue(RootCommandBuilder.LogRawOption),
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
+
+                // Исходную очередь закрывает HTTP-guard по URL (issues/{KEY}/_move),
+                // целевая едет в теле — её проверяем здесь.
+                QueueScopeFilter.EnsureTargetQueueAllowed(targetQueue, ctx.Profile);
 
                 var keyEsc = Uri.EscapeDataString(key);
                 var result = await ctx.Client.PostJsonRawAsync($"issues/{keyEsc}/_move", body, ct);

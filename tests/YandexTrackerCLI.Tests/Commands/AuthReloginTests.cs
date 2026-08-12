@@ -44,6 +44,7 @@ public sealed class AuthReloginTests
               "other":{"org_type":"yandex360","org_id":"other-org","read_only":false,
                 "auth":{"type":"oauth","token":"other-token"}},
               "fed":{"org_type":"cloud","org_id":"o1","read_only":true,"default_format":"json",
+                "allowed_queues":["DEV"],"allowed_write_issues":["DEV-1"],
                 "auth":{"type":"federated","token":"old-access","refresh_token":"rt-old",
                   "federation_id":"fed-1","dpop_key_path":null,"access_token_expires_at":"2020-01-01T00:00:00.0000000+00:00"}}}}
             """);
@@ -116,6 +117,16 @@ public sealed class AuthReloginTests
         await Assert.That(profile.GetProperty("read_only").GetBoolean()).IsTrue();
         await Assert.That(profile.GetProperty("default_format").GetString()).IsEqualTo("json");
 
+        // Политики профиля переживают повторный вход: relogin обновляет только токены.
+        // Тот же путь срабатывает автоматически при неудачном DPoP-refresh, поэтому потеря
+        // здесь означала бы молчаливое снятие ограничений посреди сессии.
+        var queues = profile.GetProperty("allowed_queues")
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
+        await Assert.That(queues).IsEquivalentTo(new[] { "DEV" });
+        var writeIssues = profile.GetProperty("allowed_write_issues")
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
+        await Assert.That(writeIssues).IsEquivalentTo(new[] { "DEV-1" });
+
         var auth = profile.GetProperty("auth");
         await Assert.That(auth.GetProperty("type").GetString()).IsEqualTo("federated");
         await Assert.That(auth.GetProperty("token").GetString()).IsEqualTo("iam-relogin-new");
@@ -124,6 +135,72 @@ public sealed class AuthReloginTests
             .IsNotEqualTo("2020-01-01T00:00:00.0000000+00:00");
         await Assert.That(auth.GetProperty("federation_id").GetString()).IsEqualTo("fed-1");
         await Assert.That(auth.GetProperty("dpop_key_path").GetString()!.Length > 0).IsTrue();
+    }
+
+    /// <summary>
+    /// Автоматический re-login при неудачном DPoP-refresh идёт через
+    /// <see cref="FederatedReloginService.ReloginAsync"/> — тот же метод, что и
+    /// <c>yt auth relogin</c>, но без участия пользователя. Проверяем именно его: политики
+    /// профиля обязаны пережить перезапись, иначе ограниченный профиль теряет ограничения
+    /// посреди сессии и молча.
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_PreservesProfilePolicies()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(
+            """
+            {"default_profile":"fed","profiles":{
+              "fed":{"org_type":"cloud","org_id":"o1","read_only":true,
+                "allowed_queues":["DEV","QA"],"allowed_write_issues":["DEV-1"],
+                "auth":{"type":"federated","token":"old-access","refresh_token":"rt-old",
+                  "federation_id":"fed-1","dpop_key_path":null,"access_token_expires_at":"2020-01-01T00:00:00.0000000+00:00"}}}}
+            """);
+
+        var browser = new CapturingBrowser();
+        var callbackTask = Task.Run(async () =>
+        {
+            while (browser.Url is null)
+            {
+                await Task.Delay(10);
+            }
+
+            var uri = new Uri(browser.Url!);
+            var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+            using var http = new HttpClient();
+            await http.GetAsync($"{query["redirect_uri"]}?code=FAKE_CODE&state={query["state"]}");
+        });
+
+        var fakeHandler = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"access_token":"iam-inline-new","refresh_token":"rt-new","expires_in":43199}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+
+        using var exchangeHttp = new HttpClient(fakeHandler);
+        var result = await FederatedReloginService.ReloginAsync(
+            "fed",
+            browser,
+            NoopInteractiveUI.Instance,
+            exchangeHttp,
+            wireSink: null,
+            timeout: TimeSpan.FromSeconds(10),
+            ct: CancellationToken.None);
+
+        await callbackTask;
+        await Assert.That(result.AccessToken).IsEqualTo("iam-inline-new");
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var profile = saved.RootElement.GetProperty("profiles").GetProperty("fed");
+        await Assert.That(profile.GetProperty("read_only").GetBoolean()).IsTrue();
+        var queues = profile.GetProperty("allowed_queues")
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
+        await Assert.That(queues).IsEquivalentTo(new[] { "DEV", "QA" });
+        var writeIssues = profile.GetProperty("allowed_write_issues")
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
+        await Assert.That(writeIssues).IsEquivalentTo(new[] { "DEV-1" });
     }
 
     [Test]
