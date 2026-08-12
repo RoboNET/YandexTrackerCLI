@@ -60,6 +60,32 @@ public static class QueuePolicy
             : Normalize(value.Split(','));
 
     /// <summary>
+    /// Пересекает два уже нормализованных списка без учёта регистра.
+    /// </summary>
+    /// <remarks>
+    /// Написание берётся из <paramref name="first"/>: первым передаётся более авторитетный
+    /// список (тот, что задан в профиле), и именно его написание должно попасть в вывод —
+    /// второй список приходит от вызывающего, и доверия к его форме меньше.
+    /// </remarks>
+    /// <param name="first">Первый список; задаёт написание результата.</param>
+    /// <param name="second">Второй список.</param>
+    /// <returns>Элементы, присутствующие в обоих списках; пустой массив, если пересечения нет.</returns>
+    public static string[] Intersect(IReadOnlyList<string> first, IReadOnlyList<string> second)
+    {
+        var other = new HashSet<string>(second, StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+        for (var i = 0; i < first.Count; i++)
+        {
+            if (other.Contains(first[i]))
+            {
+                result.Add(first[i]);
+            }
+        }
+
+        return result.ToArray();
+    }
+
+    /// <summary>
     /// Форматирует список очередей для вывода (<c>yt config get allowed_queues</c>).
     /// </summary>
     /// <param name="values">Список очередей; может быть <c>null</c>.</param>

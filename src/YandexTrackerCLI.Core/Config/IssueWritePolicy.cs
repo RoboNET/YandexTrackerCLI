@@ -50,6 +50,16 @@ public static class IssueWritePolicy
     public static string[] Normalize(IEnumerable<string?>? values) => QueuePolicy.Normalize(values);
 
     /// <summary>
+    /// Пересекает список профиля со списком из <c>YT_ALLOWED_WRITE_ISSUES</c>: окружение
+    /// может область записи только <b>сузить</b>.
+    /// </summary>
+    /// <param name="profileList">Нормализованный список профиля; задаёт написание результата.</param>
+    /// <param name="envList">Нормализованный список из переменной окружения.</param>
+    /// <returns>Задачи, разрешённые обоими списками; пустой массив, если пересечения нет.</returns>
+    public static string[] Intersect(IReadOnlyList<string> profileList, IReadOnlyList<string> envList) =>
+        QueuePolicy.Intersect(profileList, envList);
+
+    /// <summary>
     /// Форматирует список ключей задач для вывода (<c>yt config get allowed_write_issues</c>).
     /// </summary>
     /// <param name="values">Список ключей; может быть <c>null</c>.</param>

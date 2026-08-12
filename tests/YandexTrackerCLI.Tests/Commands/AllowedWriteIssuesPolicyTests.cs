@@ -231,31 +231,83 @@ public sealed class AllowedWriteIssuesPolicyTests
     }
 
     /// <summary>
-    /// <c>YT_ALLOWED_WRITE_ISSUES</c> <b>заменяет</b> список профиля: задача из env
-    /// становится разрешённой, задача из профиля — нет.
+    /// Главный тест сужения: <c>YT_ALLOWED_WRITE_ISSUES</c>, добавляющий к списку профиля
+    /// чужую задачу, не открывает её на запись. Профиль разрешает <c>DEV-42</c>, переменная
+    /// называет <c>DEV-42</c> и <c>OPS-7</c> — пишется только <c>DEV-42</c>.
     /// </summary>
     [Test]
-    public async Task EnvVariable_ReplacesProfileList()
+    public async Task EnvVariable_CannotAddForeignIssue_ToProfileList()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(RestrictedConfig);
+        env.Set("YT_ALLOWED_WRITE_ISSUES", "DEV-42,OPS-7");
+        var inner = new TestHttpMessageHandler();
+        env.InnerHandler = inner;
+
+        // Задача, названная только в env, остаётся запрещённой.
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "comment", "add", "OPS-7", "--text", "hi" }, sw, er);
+        await Assert.That(exit).IsEqualTo(10);
+        await Assert.That(await ErrorCodeOf(er)).IsEqualTo("policy_violation");
+        await Assert.That(inner.Seen).IsEmpty();
+
+        // Задача из пересечения — разрешена.
+        inner.Push(_ => Json("""{"id":"1"}"""));
+        sw = new StringWriter();
+        er = new StringWriter();
+        exit = await env.Invoke(new[] { "comment", "add", "DEV-42", "--text", "hi" }, sw, er);
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(inner.Seen.Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// Регистр не даёт обойти пересечение: <c>ops-7</c> в env — та же чужая задача.
+    /// </summary>
+    [Test]
+    public async Task EnvVariable_LowercaseForeignIssue_StaysForbidden()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(RestrictedConfig);
+        env.Set("YT_ALLOWED_WRITE_ISSUES", "dev-42,ops-7");
+        var inner = new TestHttpMessageHandler();
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "comment", "add", "ops-7", "--text", "hi" }, sw, er);
+
+        await Assert.That(exit).IsEqualTo(10);
+        await Assert.That(await ErrorCodeOf(er)).IsEqualTo("policy_violation");
+        await Assert.That(inner.Seen).IsEmpty();
+    }
+
+    /// <summary>
+    /// Env, целиком не пересекающийся со списком профиля, — <c>config_error</c> (exit 9),
+    /// а не «ограничений нет»: запись не открывается ни в задачу из env, ни в задачу
+    /// профиля, и в сеть не уходит ничего.
+    /// </summary>
+    [Test]
+    public async Task EnvVariable_DisjointFromProfileList_IsConfigError()
     {
         using var env = new TestEnv();
         env.SetConfig(RestrictedConfig);
         env.Set("YT_ALLOWED_WRITE_ISSUES", "OPS-7");
         var inner = new TestHttpMessageHandler();
-        inner.Push(_ => Json("""{"id":"1"}"""));
         env.InnerHandler = inner;
 
         var sw = new StringWriter();
         var er = new StringWriter();
         var exit = await env.Invoke(new[] { "comment", "add", "OPS-7", "--text", "hi" }, sw, er);
-        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(exit).IsEqualTo(9);
+        await Assert.That(await ErrorCodeOf(er)).IsEqualTo("config_error");
 
-        // Задача из профиля списком из env вытеснена, а не добавлена к нему.
+        // Права не расширены и не подменены: запись в задачу профиля тоже не проходит.
         sw = new StringWriter();
         er = new StringWriter();
         exit = await env.Invoke(new[] { "comment", "add", "DEV-42", "--text", "hi" }, sw, er);
-        await Assert.That(exit).IsEqualTo(10);
-        await Assert.That(await ErrorCodeOf(er)).IsEqualTo("policy_violation");
-        await Assert.That(inner.Seen.Count).IsEqualTo(1);
+        await Assert.That(exit).IsEqualTo(9);
+        await Assert.That(inner.Seen).IsEmpty();
     }
 
     /// <summary>
@@ -449,13 +501,13 @@ public sealed class AllowedWriteIssuesPolicyTests
     }
 
     /// <summary>
-    /// Когда список пришёл из окружения, <c>auth status</c> говорит об этом явно.
+    /// Профиль ограничения не нёс, список задан переменной — источник <c>env</c>.
     /// </summary>
     [Test]
     public async Task AuthStatus_ShowsAllowedWriteIssues_FromEnv()
     {
         using var env = new TestEnv();
-        env.SetConfig(RestrictedConfig);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
         env.Set("YT_ALLOWED_WRITE_ISSUES", "OPS-7,OPS-8");
 
         var sw = new StringWriter();
@@ -469,6 +521,59 @@ public sealed class AllowedWriteIssuesPolicyTests
         await Assert.That(issues).IsEquivalentTo(new[] { "OPS-7", "OPS-8" });
         await Assert.That(doc.RootElement.GetProperty("allowed_write_issues_source").GetString())
             .IsEqualTo("env");
+    }
+
+    /// <summary>
+    /// Ограничения несли оба источника — <c>auth status</c> печатает пересечение и
+    /// источник <c>profile+env</c>: по одному лишь списку оператор не отличил бы
+    /// «профиль сузили переменной» от «профиль такой и есть».
+    /// </summary>
+    [Test]
+    public async Task AuthStatus_ShowsIntersection_WithProfilePlusEnvSource()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(
+            """
+            {
+              "default_profile":"ci",
+              "profiles":{"ci":{"org_type":"cloud","org_id":"o","read_only":false,
+                                "allowed_write_issues":["DEV-42","DEV-43"],
+                                "auth":{"type":"oauth","token":"y0_X"}}}
+            }
+            """);
+        env.Set("YT_ALLOWED_WRITE_ISSUES", "dev-43,OPS-7");
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "auth", "status" }, sw, er);
+
+        await Assert.That(exit).IsEqualTo(0);
+        using var doc = JsonDocument.Parse(sw.ToString());
+        var issues = doc.RootElement.GetProperty("allowed_write_issues")
+            .EnumerateArray().Select(e => e.GetString()!).ToArray();
+        // Написание — из профиля, не из переменной.
+        await Assert.That(issues).IsEquivalentTo(new[] { "DEV-43" });
+        await Assert.That(doc.RootElement.GetProperty("allowed_write_issues_source").GetString())
+            .IsEqualTo("profile+env");
+    }
+
+    /// <summary>
+    /// При пустом пересечении <c>auth status</c> честно падает с <c>config_error</c>,
+    /// а не печатает пустой список, который читался бы как «ограничений нет».
+    /// </summary>
+    [Test]
+    public async Task AuthStatus_EmptyIntersection_FailsWithConfigError()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(RestrictedConfig);
+        env.Set("YT_ALLOWED_WRITE_ISSUES", "OPS-7");
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "auth", "status" }, sw, er);
+
+        await Assert.That(exit).IsEqualTo(9);
+        await Assert.That(await ErrorCodeOf(er)).IsEqualTo("config_error");
     }
 
     /// <summary>

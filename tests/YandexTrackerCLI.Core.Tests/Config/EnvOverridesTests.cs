@@ -302,7 +302,7 @@ public sealed class EnvOverridesTests
         var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
 
         await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42", "DEV-43" });
-        await Assert.That(eff.AllowedWriteIssuesFromEnv).IsFalse();
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Profile);
     }
 
     [Test]
@@ -319,25 +319,71 @@ public sealed class EnvOverridesTests
     }
 
     /// <summary>
-    /// YT_ALLOWED_WRITE_ISSUES <b>заменяет</b> список профиля, а не пересекается с ним:
-    /// в CI задача каждый раз своя. Обратная сторона — вызывающий, управляющий окружением,
-    /// может так ослабить политику профиля.
+    /// YT_ALLOWED_WRITE_ISSUES <b>сужает</b> список профиля, а не заменяет его: действует
+    /// пересечение. Задача, названная только в env, разрешённой не становится — иначе
+    /// вызывающий, управляющий окружением, снимал бы политику профиля одной переменной.
     /// </summary>
     [Test]
-    public async Task Resolve_AllowedWriteIssues_EnvReplacesProfileList()
+    public async Task Resolve_AllowedWriteIssues_EnvIntersectsProfileList()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42", "DEV-43" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "DEV-43, OPS-7" };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-43" });
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.ProfileAndEnv);
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "OPS-7")).IsFalse();
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "DEV-42")).IsFalse();
+    }
+
+    /// <summary>
+    /// Регистр не помогает: пересечение считается без учёта регистра, а в результат
+    /// попадает написание из профиля — это он авторитетный источник, а не окружение.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_IntersectionIsCaseInsensitive_AndKeepsProfileSpelling()
     {
         var cfg = CfgWith(new Profile(
             OrgType.Cloud, "o", false,
             new AuthConfig(AuthType.OAuth, Token: "y0_x"),
             AllowedWriteIssues: new[] { "DEV-42" }));
-        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "OPS-7, OPS-8" };
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "dev-42, ops-7" };
 
         var eff = EnvOverrides.Resolve(cfg, null, env);
 
-        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "OPS-7", "OPS-8" });
-        await Assert.That(eff.AllowedWriteIssuesFromEnv).IsTrue();
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "ops-7")).IsFalse();
     }
 
+    /// <summary>
+    /// Пересечение пустое — резолв падает с <c>config_error</c>. Вернуть пустой список
+    /// нельзя: во всей модели он означает «ограничения нет», то есть запись открылась бы
+    /// всюду именно там, где вызывающий назвал только чужие задачи.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_EmptyIntersection_IsConfigError()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "OPS-7,OPS-8" };
+
+        var ex = Assert.Throws<TrackerException>(() => EnvOverrides.Resolve(cfg, null, env));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("YT_ALLOWED_WRITE_ISSUES");
+        await Assert.That(ex.Message).Contains("does not intersect");
+    }
+
+    /// <summary>
+    /// Профиль без списка + env со списком: переменная задаёт ограничение с нуля.
+    /// Это рабочий CI-сценарий (задача каждый раз своя), и он остаётся сужением.
+    /// </summary>
     [Test]
     public async Task Resolve_AllowedWriteIssues_EnvAloneSetsTheRestriction()
     {
@@ -348,7 +394,7 @@ public sealed class EnvOverridesTests
         var eff = EnvOverrides.Resolve(cfg, null, env);
 
         await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
-        await Assert.That(eff.AllowedWriteIssuesFromEnv).IsTrue();
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Env);
     }
 
     [Test]
@@ -363,7 +409,7 @@ public sealed class EnvOverridesTests
         var eff = EnvOverrides.Resolve(cfg, null, env);
 
         await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
-        await Assert.That(eff.AllowedWriteIssuesFromEnv).IsFalse();
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Profile);
     }
 
     /// <summary>

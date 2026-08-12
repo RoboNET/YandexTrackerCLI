@@ -18,9 +18,10 @@ namespace YandexTrackerCLI.Core.Config;
 /// «ограничения нет». Ограничение касается только записи: чтение любых задач
 /// (в пределах <paramref name="AllowedQueues"/>) продолжает работать.
 /// </param>
-/// <param name="AllowedWriteIssuesFromEnv">
-/// <c>true</c>, если действующий список задач пришёл из <c>YT_ALLOWED_WRITE_ISSUES</c>
-/// и заменил значение профиля.
+/// <param name="AllowedWriteIssuesSource">
+/// Откуда взялся действующий список задач: из профиля, из <c>YT_ALLOWED_WRITE_ISSUES</c>
+/// (профиль ограничения не нёс) или из их пересечения. Окружение может область записи
+/// только сузить, поэтому третий случай — всегда подмножество списка профиля.
 /// </param>
 public sealed record EffectiveProfile(
     string Name,
@@ -31,4 +32,4 @@ public sealed record EffectiveProfile(
     string? DefaultFormat = null,
     IReadOnlyList<string>? AllowedQueues = null,
     IReadOnlyList<string>? AllowedWriteIssues = null,
-    bool AllowedWriteIssuesFromEnv = false);
+    WriteIssuesSource AllowedWriteIssuesSource = WriteIssuesSource.Profile);

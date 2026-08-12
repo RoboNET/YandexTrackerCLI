@@ -95,17 +95,24 @@ public static class EnvOverrides
         // а переменная окружения так же управляема вызывающим, как и флаг командной строки.
         var allowedQueues = QueuePolicy.Normalize(baseProfile?.AllowedQueues);
 
-        // allowed_write_issues, наоборот, env-override имеет: в CI задача каждый раз своя,
-        // и список приходится задавать на запуск. Env ЗАМЕНЯЕТ значение профиля (не
-        // пересекается с ним) — то есть вызывающий, управляющий окружением, может ослабить
-        // эту политику, в отличие от read_only и allowed_queues. Это осознанный размен
-        // гибкости на строгость, зафиксированный в документации.
+        // allowed_write_issues, в отличие от allowed_queues, env-override имеет: в CI задача
+        // каждый раз своя, и список приходится задавать на запуск. Но окружение управляемо
+        // тем же вызывающим, что и командная строка, поэтому переменная может область записи
+        // только СУЗИТЬ: профиль без списка + env = список из env, профиль со списком + env =
+        // их пересечение. Расширения не даёт ни одно сочетание значений.
+        var profileWriteIssues = IssueWritePolicy.Normalize(baseProfile?.AllowedWriteIssues);
         var envWriteIssues = Trimmed(env, "YT_ALLOWED_WRITE_ISSUES");
         string[] allowedWriteIssues;
-        if (envWriteIssues is not null)
+        WriteIssuesSource writeIssuesSource;
+        if (envWriteIssues is null)
         {
-            allowedWriteIssues = IssueWritePolicy.ParseList(envWriteIssues);
-            if (allowedWriteIssues.Length == 0)
+            allowedWriteIssues = profileWriteIssues;
+            writeIssuesSource = WriteIssuesSource.Profile;
+        }
+        else
+        {
+            var envList = IssueWritePolicy.ParseList(envWriteIssues);
+            if (envList.Length == 0)
             {
                 // Значение задано (непустое после Trim), но ни одного ключа из него не
                 // получилось — например "," или ",,". Молча трактовать это как «ограничения
@@ -116,15 +123,36 @@ public static class EnvOverrides
                     + "Pass a comma-separated list (e.g. 'DEV-42,DEV-43'), or unset the variable "
                     + "to fall back to the profile's allowed_write_issues.");
             }
-        }
-        else
-        {
-            allowedWriteIssues = IssueWritePolicy.Normalize(baseProfile?.AllowedWriteIssues);
-        }
 
-        // Источник = env ровно тогда, когда значение пришло из переменной: пустых списков
-        // из env больше не бывает (см. проверку выше), поэтому признак честен во всех случаях.
-        var writeIssuesFromEnv = envWriteIssues is not null;
+            if (profileWriteIssues.Length == 0)
+            {
+                allowedWriteIssues = envList;
+                writeIssuesSource = WriteIssuesSource.Env;
+            }
+            else
+            {
+                var intersection = IssueWritePolicy.Intersect(profileWriteIssues, envList);
+                if (intersection.Length == 0)
+                {
+                    // Пустое пересечение — не «ограничения нет»: пустой список во всей модели
+                    // означает ровно отсутствие ограничения, и вернуть его здесь значило бы
+                    // открыть запись всюду. Отдельного состояния «писать нельзя никуда» в
+                    // модели нет намеренно: его пришлось бы протаскивать через каждую точку
+                    // проверки, и любая пропущенная превратилась бы в дыру. Поэтому резолв
+                    // падает целиком — команда не выполняется вовсе, а оператор видит, какие
+                    // два списка не сошлись.
+                    throw new TrackerException(
+                        ErrorCode.ConfigError,
+                        $"YT_ALLOWED_WRITE_ISSUES ({string.Join(", ", envList)}) does not intersect "
+                        + $"allowed_write_issues of profile '{name}' ({string.Join(", ", profileWriteIssues)}). "
+                        + "The variable can only narrow the profile's write scope, never extend it: "
+                        + "pass issues from the profile's list, or unset the variable to use that list as is.");
+                }
+
+                allowedWriteIssues = intersection;
+                writeIssuesSource = WriteIssuesSource.ProfileAndEnv;
+            }
+        }
 
         return new EffectiveProfile(
             name,
@@ -135,7 +163,7 @@ public static class EnvOverrides
             DefaultFormat: baseProfile?.DefaultFormat,
             AllowedQueues: allowedQueues,
             AllowedWriteIssues: allowedWriteIssues,
-            AllowedWriteIssuesFromEnv: writeIssuesFromEnv);
+            AllowedWriteIssuesSource: writeIssuesSource);
     }
 
     private static string? Trimmed(IReadOnlyDictionary<string, string?> env, string key)
