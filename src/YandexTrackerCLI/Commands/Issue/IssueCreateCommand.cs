@@ -83,9 +83,10 @@ public static class IssueCreateCommand
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --json-file, --json-stdin, or inline flags.");
 
+                string? targetQueue = null;
                 using (var doc = JsonDocument.Parse(body))
                 {
-                    if (!doc.RootElement.TryGetProperty("queue", out _))
+                    if (!doc.RootElement.TryGetProperty("queue", out var queueEl))
                     {
                         throw new TrackerException(ErrorCode.InvalidArgs,
                             "Effective body must include 'queue'.");
@@ -95,6 +96,8 @@ public static class IssueCreateCommand
                         throw new TrackerException(ErrorCode.InvalidArgs,
                             "Effective body must include 'summary'.");
                     }
+
+                    targetQueue = QueueScopeFilter.ReadQueueKeyFromJson(queueEl);
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -105,6 +108,10 @@ public static class IssueCreateCommand
                     wireLogMask: !pr.GetValue(RootCommandBuilder.LogRawOption),
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
+
+                // Очередь создаваемой задачи едет в теле запроса, а не в URL, поэтому
+                // HTTP-guard её не видит — проверяем здесь.
+                QueueScopeFilter.EnsureTargetQueueAllowed(targetQueue, ctx.Profile);
 
                 var result = await ctx.Client.PostJsonRawAsync("issues", body, ct);
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat, pretty: !Console.IsOutputRedirected);

@@ -1,5 +1,6 @@
 namespace YandexTrackerCLI.Tests.Commands.Suggest;
 
+using System.Text.Json;
 using TUnit.Core;
 using YandexTrackerCLI.Commands.Suggest;
 
@@ -39,5 +40,65 @@ public sealed class SuggestCommandTests
     {
         var path = SuggestCommand.BuildSuggestPath(string.Empty, null);
         await Assert.That(path).IsEqualTo("issues/_suggest?input=&full=true");
+    }
+
+    /// <summary>
+    /// Без <c>--queue</c> запрос уходит без очереди, поэтому сервер возвращает задачи любых
+    /// очередей: ограничение профиля обязано действовать на результат, иначе пикер
+    /// показывает чужие задачи с темами.
+    /// </summary>
+    [Test]
+    public async Task FilterSuggestions_DropsIssuesOutsideAllowedQueues()
+    {
+        using var doc = JsonDocument.Parse(
+            """[{"key":"DEV-1"},{"key":"OPS-7","summary":"secret"},{"key":"QA-2"}]""");
+
+        var filtered = SuggestCommand.FilterSuggestions(doc.RootElement, 10, new[] { "DEV", "QA" });
+
+        var keys = filtered.Select(e => e.GetProperty("key").GetString()!).ToArray();
+        await Assert.That(keys).IsEquivalentTo(new[] { "DEV-1", "QA-2" });
+    }
+
+    /// <summary>
+    /// Лимит считает показанные элементы: чужие задачи не занимают места в списке.
+    /// </summary>
+    [Test]
+    public async Task FilterSuggestions_LimitCountsShownItemsOnly()
+    {
+        using var doc = JsonDocument.Parse(
+            """[{"key":"OPS-1"},{"key":"DEV-1"},{"key":"OPS-2"},{"key":"QA-1"},{"key":"DEV-2"}]""");
+
+        var filtered = SuggestCommand.FilterSuggestions(doc.RootElement, 2, new[] { "DEV", "QA" });
+
+        var keys = filtered.Select(e => e.GetProperty("key").GetString()!).ToArray();
+        await Assert.That(keys).IsEquivalentTo(new[] { "DEV-1", "QA-1" });
+    }
+
+    /// <summary>
+    /// Элемент без разбираемого ключа при действующем ограничении отбрасывается (fail closed).
+    /// </summary>
+    [Test]
+    public async Task FilterSuggestions_ItemWithoutKey_IsDropped()
+    {
+        using var doc = JsonDocument.Parse("""[{"summary":"no key"},{"key":"DEV-1"}]""");
+
+        var filtered = SuggestCommand.FilterSuggestions(doc.RootElement, 10, new[] { "DEV" });
+
+        var keys = filtered.Select(e => e.GetProperty("key").GetString()!).ToArray();
+        await Assert.That(keys).IsEquivalentTo(new[] { "DEV-1" });
+    }
+
+    /// <summary>
+    /// Регрессия: без ограничения выдача не фильтруется, лимит работает как раньше.
+    /// </summary>
+    [Test]
+    public async Task FilterSuggestions_Unrestricted_KeepsEverythingUpToLimit()
+    {
+        using var doc = JsonDocument.Parse("""[{"key":"OPS-1"},{"key":"DEV-1"},{"key":"QA-1"}]""");
+
+        var filtered = SuggestCommand.FilterSuggestions(doc.RootElement, 2, null);
+
+        var keys = filtered.Select(e => e.GetProperty("key").GetString()!).ToArray();
+        await Assert.That(keys).IsEquivalentTo(new[] { "OPS-1", "DEV-1" });
     }
 }

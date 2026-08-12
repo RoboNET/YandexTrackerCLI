@@ -8,11 +8,6 @@ using Api.Errors;
 /// </summary>
 public sealed class ReadOnlyGuardHandler : DelegatingHandler
 {
-    private static readonly HashSet<string> Mutating = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "POST", "PUT", "PATCH", "DELETE",
-    };
-
     private readonly bool _enabled;
 
     /// <summary>
@@ -27,9 +22,9 @@ public sealed class ReadOnlyGuardHandler : DelegatingHandler
     /// <inheritdoc />
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        if (_enabled && Mutating.Contains(request.Method.Method))
+        if (_enabled && MutatingRequest.IsMutating(request))
         {
-            if (IsReadOnlyPostSearch(request))
+            if (MutatingRequest.IsSafePostSearch(request))
             {
                 return base.SendAsync(request, ct);
             }
@@ -40,32 +35,5 @@ public sealed class ReadOnlyGuardHandler : DelegatingHandler
         }
 
         return base.SendAsync(request, ct);
-    }
-
-    /// <summary>
-    /// Determines whether the request is a Yandex Tracker search endpoint invocation that
-    /// uses <c>POST</c> semantically as a read-only operation (e.g. <c>/v3/issues/_search</c>,
-    /// <c>/v3/entities/project/_search</c>). Such calls carry a JSON query in the body but
-    /// do not mutate server state, so they must pass through even under a read-only policy.
-    /// </summary>
-    /// <param name="request">The outgoing HTTP request.</param>
-    /// <returns>
-    /// <c>true</c> if the request method is <c>POST</c> and its path ends with <c>/_search</c>;
-    /// otherwise <c>false</c>.
-    /// </returns>
-    private static bool IsReadOnlyPostSearch(HttpRequestMessage request)
-    {
-        if (!HttpMethod.Post.Equals(request.Method))
-        {
-            return false;
-        }
-
-        var path = request.RequestUri?.AbsolutePath;
-        if (string.IsNullOrEmpty(path))
-        {
-            return false;
-        }
-
-        return path.EndsWith("/_search", StringComparison.Ordinal);
     }
 }

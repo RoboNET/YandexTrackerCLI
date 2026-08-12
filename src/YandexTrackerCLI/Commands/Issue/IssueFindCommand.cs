@@ -121,6 +121,11 @@ public static class IssueFindCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
+                // Явно названная очередь вне allowed_queues — это ошибка политики, а не
+                // «пустой результат»: пользователь должен видеть причину.
+                QueueScopeFilter.EnsureQueueAllowed(filters.Queue, ctx.Profile);
+                var allowedQueues = ctx.Profile.AllowedQueues;
+
                 var bodyJson = BuildBody(yql);
                 var ui = InteractiveUIResolver.Resolve(ctx.EffectiveOutputFormat);
 
@@ -134,11 +139,12 @@ public static class IssueFindCommand
 
                 if (stream)
                 {
-                    await StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, firstPage, ct);
+                    await StreamNdjsonAsync(ctx.Client, bodyJson, perPage, max, firstPage, allowedQueues, ct);
                 }
                 else
                 {
-                    await WriteAggregatedAsync(ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, firstPage, ct);
+                    await WriteAggregatedAsync(
+                        ctx.Client, bodyJson, perPage, max, ctx.EffectiveOutputFormat, firstPage, allowedQueues, ct);
                 }
 
                 return 0;
@@ -194,6 +200,14 @@ public static class IssueFindCommand
     /// <see cref="JsonWriter.Write"/> в указанном формате (json/minimal/table).
     /// Ограничивается <paramref name="max"/> записями.
     /// </summary>
+    /// <param name="client">Клиент Трекера.</param>
+    /// <param name="bodyJson">Тело запроса поиска.</param>
+    /// <param name="perPage">Размер страницы.</param>
+    /// <param name="max">Максимум записей в выводе.</param>
+    /// <param name="format">Формат вывода.</param>
+    /// <param name="firstPage">Уже полученная первая страница.</param>
+    /// <param name="allowedQueues">Разрешённые очереди профиля; пустой список = без ограничения.</param>
+    /// <param name="ct">Токен отмены.</param>
     private static async Task WriteAggregatedAsync(
         TrackerClient client,
         string bodyJson,
@@ -201,6 +215,7 @@ public static class IssueFindCommand
         int max,
         OutputFormat format,
         FirstPage firstPage,
+        IReadOnlyList<string>? allowedQueues,
         CancellationToken ct)
     {
         var pretty = !Console.IsOutputRedirected;
@@ -209,7 +224,7 @@ public static class IssueFindCommand
         {
             w.WriteStartArray();
             var count = 0;
-            await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, ct))
+            await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, allowedQueues, ct))
             {
                 el.WriteTo(w);
                 count++;
@@ -228,16 +243,24 @@ public static class IssueFindCommand
     /// <summary>
     /// Печатает каждый элемент как отдельную строку NDJSON (без отступов).
     /// </summary>
+    /// <param name="client">Клиент Трекера.</param>
+    /// <param name="bodyJson">Тело запроса поиска.</param>
+    /// <param name="perPage">Размер страницы.</param>
+    /// <param name="max">Максимум записей в выводе.</param>
+    /// <param name="firstPage">Уже полученная первая страница.</param>
+    /// <param name="allowedQueues">Разрешённые очереди профиля; пустой список = без ограничения.</param>
+    /// <param name="ct">Токен отмены.</param>
     private static async Task StreamNdjsonAsync(
         TrackerClient client,
         string bodyJson,
         int perPage,
         int max,
         FirstPage firstPage,
+        IReadOnlyList<string>? allowedQueues,
         CancellationToken ct)
     {
         var count = 0;
-        await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, ct))
+        await foreach (var el in SearchPagedAsync(client, bodyJson, perPage, max, firstPage, allowedQueues, ct))
         {
             using var ms = new MemoryStream();
             await using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -259,12 +282,27 @@ public static class IssueFindCommand
     /// заголовок <c>X-Total-Pages</c> для остановки. Принимает уже полученную
     /// первую страницу, чтобы не делать лишний запрос.
     /// </summary>
+    /// <remarks>
+    /// Задачи из очередей вне <paramref name="allowedQueues"/> вырезаются здесь, до выдачи
+    /// наружу: произвольный YQL сервер выполняет целиком, и ограничение профиля должно
+    /// действовать на результат, не ломая сам запрос. <paramref name="max"/> считает именно
+    /// выданные элементы, поэтому пагинация продолжается, пока лимит не набран.
+    /// </remarks>
+    /// <param name="client">Клиент Трекера.</param>
+    /// <param name="bodyJson">Тело запроса поиска.</param>
+    /// <param name="perPage">Размер страницы.</param>
+    /// <param name="max">Максимум выданных записей.</param>
+    /// <param name="firstPage">Уже полученная первая страница.</param>
+    /// <param name="allowedQueues">Разрешённые очереди профиля; пустой список = без ограничения.</param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Асинхронная последовательность разрешённых к выводу элементов.</returns>
     private static async IAsyncEnumerable<JsonElement> SearchPagedAsync(
         TrackerClient client,
         string bodyJson,
         int perPage,
         int max,
         FirstPage firstPage,
+        IReadOnlyList<string>? allowedQueues,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var emitted = 0;
@@ -278,6 +316,11 @@ public static class IssueFindCommand
 
         foreach (var item in firstPage.Payload.EnumerateArray())
         {
+            if (!QueueScopeFilter.AllowsIssue(item, allowedQueues))
+            {
+                continue;
+            }
+
             yield return item;
             emitted++;
             if (emitted >= max)
@@ -306,6 +349,11 @@ public static class IssueFindCommand
 
             foreach (var item in payload.EnumerateArray())
             {
+                if (!QueueScopeFilter.AllowsIssue(item, allowedQueues))
+                {
+                    continue;
+                }
+
                 yield return item;
                 emitted++;
                 if (emitted >= max)

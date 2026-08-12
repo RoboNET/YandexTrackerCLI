@@ -92,9 +92,10 @@ public static class ComponentCreateCommand
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "component create: provide --json-file/--json-stdin or typed flags.");
 
+                string? targetQueue;
                 using (var doc = JsonDocument.Parse(body))
                 {
-                    if (!doc.RootElement.TryGetProperty("queue", out _))
+                    if (!doc.RootElement.TryGetProperty("queue", out var queueEl))
                     {
                         throw new TrackerException(ErrorCode.InvalidArgs,
                             "Effective body must include 'queue'.");
@@ -104,6 +105,8 @@ public static class ComponentCreateCommand
                         throw new TrackerException(ErrorCode.InvalidArgs,
                             "Effective body must include 'name'.");
                     }
+
+                    targetQueue = QueueScopeFilter.ReadQueueKeyFromJson(queueEl);
                 }
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
@@ -114,6 +117,10 @@ public static class ComponentCreateCommand
                     wireLogMask: !pr.GetValue(RootCommandBuilder.LogRawOption),
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
+
+                // Очередь компонента едет в теле запроса (и через --queue, и через --json-*),
+                // а не в URL — HTTP-guard её не видит, проверяем здесь.
+                QueueScopeFilter.EnsureTargetQueueAllowed(targetQueue, ctx.Profile);
 
                 var result = await ctx.Client.PostJsonRawAsync("components", body, ct);
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat, pretty: !Console.IsOutputRedirected);

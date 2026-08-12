@@ -47,6 +47,7 @@ internal sealed class TestEnv : IDisposable
         Set("YT_ORG_TYPE", null);
         Set("YT_ORG_ID", null);
         Set("YT_READ_ONLY", null);
+        Set("YT_ALLOWED_WRITE_ISSUES", null);
         Set("YT_FORMAT", null);
         // Sandbox XDG paths so federated DPoP keys and IAM token caches don't leak
         // onto the developer's real filesystem during tests.

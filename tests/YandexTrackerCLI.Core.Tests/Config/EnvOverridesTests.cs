@@ -246,4 +246,203 @@ public sealed class EnvOverridesTests
         await Assert.That(eff.Auth.Token).IsEqualTo("fed-token");
         await Assert.That(eff.OrgId).IsEqualTo("fed-org");
     }
+
+    [Test]
+    public async Task Resolve_AllowedQueues_FromProfile_IsNormalized()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedQueues: new[] { " DEV ", "", "QA", "dev" }));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.AllowedQueues).IsEquivalentTo(new[] { "DEV", "QA" });
+    }
+
+    [Test]
+    public async Task Resolve_NoAllowedQueues_MeansNoRestriction()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.AllowedQueues).IsNotNull();
+        await Assert.That(eff.AllowedQueues!).IsEmpty();
+        await Assert.That(QueuePolicy.IsRestricted(eff.AllowedQueues)).IsFalse();
+    }
+
+    /// <summary>
+    /// allowed_queues намеренно не читается из окружения: env так же управляем вызывающим,
+    /// как и флаг командной строки, поэтому политика остаётся свойством профиля.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedQueues_HasNoEnvOverride()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedQueues: new[] { "DEV" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_QUEUES"] = "OPS" };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedQueues).IsEquivalentTo(new[] { "DEV" });
+    }
+
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_FromProfile_IsNormalized()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { " DEV-42 ", "", "dev-42", "DEV-43" }));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42", "DEV-43" });
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Profile);
+    }
+
+    [Test]
+    public async Task Resolve_NoAllowedWriteIssues_MeansNoRestriction()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.AllowedWriteIssues).IsNotNull();
+        await Assert.That(eff.AllowedWriteIssues!).IsEmpty();
+        await Assert.That(IssueWritePolicy.IsRestricted(eff.AllowedWriteIssues)).IsFalse();
+    }
+
+    /// <summary>
+    /// YT_ALLOWED_WRITE_ISSUES <b>сужает</b> список профиля, а не заменяет его: действует
+    /// пересечение. Задача, названная только в env, разрешённой не становится — иначе
+    /// вызывающий, управляющий окружением, снимал бы политику профиля одной переменной.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_EnvIntersectsProfileList()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42", "DEV-43" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "DEV-43, OPS-7" };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-43" });
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.ProfileAndEnv);
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "OPS-7")).IsFalse();
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "DEV-42")).IsFalse();
+    }
+
+    /// <summary>
+    /// Регистр не помогает: пересечение считается без учёта регистра, а в результат
+    /// попадает написание из профиля — это он авторитетный источник, а не окружение.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_IntersectionIsCaseInsensitive_AndKeepsProfileSpelling()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "dev-42, ops-7" };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
+        await Assert.That(IssueWritePolicy.IsAllowed(eff.AllowedWriteIssues, "ops-7")).IsFalse();
+    }
+
+    /// <summary>
+    /// Пересечение пустое — резолв падает с <c>config_error</c>. Вернуть пустой список
+    /// нельзя: во всей модели он означает «ограничения нет», то есть запись открылась бы
+    /// всюду именно там, где вызывающий назвал только чужие задачи.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_EmptyIntersection_IsConfigError()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "OPS-7,OPS-8" };
+
+        var ex = Assert.Throws<TrackerException>(() => EnvOverrides.Resolve(cfg, null, env));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("YT_ALLOWED_WRITE_ISSUES");
+        await Assert.That(ex.Message).Contains("does not intersect");
+    }
+
+    /// <summary>
+    /// Профиль без списка + env со списком: переменная задаёт ограничение с нуля.
+    /// Это рабочий CI-сценарий (задача каждый раз своя), и он остаётся сужением.
+    /// </summary>
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_EnvAloneSetsTheRestriction()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "DEV-42" };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Env);
+    }
+
+    [Test]
+    public async Task Resolve_AllowedWriteIssues_BlankEnv_KeepsProfileList()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = "   " };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.AllowedWriteIssues).IsEquivalentTo(new[] { "DEV-42" });
+        await Assert.That(eff.AllowedWriteIssuesSource).IsEqualTo(WriteIssuesSource.Profile);
+    }
+
+    /// <summary>
+    /// Значение из одних разделителей (<c>","</c>, <c>",,"</c>, <c>" , "</c>) — ошибка
+    /// конфигурации, а не тихое снятие ограничения: иначе опечатка в разделителях
+    /// открывала бы запись во все задачи.
+    /// </summary>
+    [Test]
+    [Arguments(",")]
+    [Arguments(",,")]
+    [Arguments(" , ")]
+    public async Task Resolve_AllowedWriteIssues_EnvWithoutKeys_IsConfigError(string value)
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false,
+            new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            AllowedWriteIssues: new[] { "DEV-42" }));
+        var env = new Dictionary<string, string?> { ["YT_ALLOWED_WRITE_ISSUES"] = value };
+
+        var ex = Assert.Throws<TrackerException>(() => EnvOverrides.Resolve(cfg, null, env));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("YT_ALLOWED_WRITE_ISSUES");
+    }
+
+    [Test]
+    public async Task Resolve_ProfileReadOnly_IsHonoured_WithoutCliFlag()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", ReadOnly: true, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>(), cliReadOnly: false);
+
+        await Assert.That(eff.ReadOnly).IsTrue();
+    }
 }

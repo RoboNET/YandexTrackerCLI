@@ -79,7 +79,11 @@ public static class SuggestCommand
                     limit = 1;
                 }
 
-                var loop = new SuggestLoop(ctx.Client, queue, limit, initial);
+                // Явно названная очередь вне allowed_queues — ошибка политики, а не пустая
+                // выдача (HTTP-guard отклонил бы и сам запрос, но сообщение здесь точнее).
+                QueueScopeFilter.EnsureQueueAllowed(queue, ctx.Profile);
+
+                var loop = new SuggestLoop(ctx.Client, queue, limit, initial, ctx.Profile.AllowedQueues);
                 var result = await loop.RunAsync(ct);
                 if (result.PickedKey is null)
                 {
@@ -117,6 +121,48 @@ public static class SuggestCommand
     }
 
     /// <summary>
+    /// Отбирает элементы ответа <c>_suggest</c>, допустимые к показу, и обрезает их по лимиту.
+    /// </summary>
+    /// <remarks>
+    /// Без <c>--queue</c> запрос уходит без указания очереди, поэтому HTTP-guard его
+    /// пропускает (сегмент <c>_suggest</c> ключа не несёт), а сервер возвращает задачи любых
+    /// очередей. Ограничение профиля должно действовать на результат — так же, как в
+    /// <c>issue find</c>. Отсечение по <c>limit</c> происходит уже после фильтрации, иначе
+    /// чужие задачи занимали бы места в списке.
+    /// </remarks>
+    /// <param name="payload">Ответ API (ожидается массив задач).</param>
+    /// <param name="limit">Сколько результатов показывать.</param>
+    /// <param name="allowedQueues">Разрешённые очереди профиля; пустой список = без ограничения.</param>
+    /// <returns>Элементы для показа (клонированные, независимые от исходного документа).</returns>
+    internal static JsonElement[] FilterSuggestions(
+        JsonElement payload,
+        int limit,
+        IReadOnlyList<string>? allowedQueues)
+    {
+        if (payload.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<JsonElement>();
+        }
+
+        var list = new List<JsonElement>();
+        foreach (var item in payload.EnumerateArray())
+        {
+            if (!QueueScopeFilter.AllowsIssue(item, allowedQueues))
+            {
+                continue;
+            }
+
+            list.Add(item.Clone());
+            if (list.Count >= limit)
+            {
+                break;
+            }
+        }
+
+        return list.ToArray();
+    }
+
+    /// <summary>
     /// Результат интерактивной TUI-сессии.
     /// </summary>
     private readonly record struct LoopResult(string? PickedKey, int ExitCode);
@@ -129,6 +175,7 @@ public static class SuggestCommand
         private readonly TrackerClient _client;
         private readonly string? _queue;
         private readonly int _limit;
+        private readonly IReadOnlyList<string>? _allowedQueues;
         private string _buffer;
         private int _selectedIndex;
         private JsonElement[] _results = Array.Empty<JsonElement>();
@@ -138,11 +185,17 @@ public static class SuggestCommand
         private long _requestVersion;
         private readonly ConcurrentQueue<Action> _pendingUpdates = new();
 
-        public SuggestLoop(TrackerClient client, string? queue, int limit, string initialBuffer)
+        public SuggestLoop(
+            TrackerClient client,
+            string? queue,
+            int limit,
+            string initialBuffer,
+            IReadOnlyList<string>? allowedQueues)
         {
             _client = client;
             _queue = queue;
             _limit = limit;
+            _allowedQueues = allowedQueues;
             // L3: strip control chars from initial buffer.
             _buffer = new string((initialBuffer ?? string.Empty).Where(c => !char.IsControl(c)).ToArray());
             _selectedIndex = 0;
@@ -325,16 +378,7 @@ public static class SuggestCommand
 
                     if (payload.ValueKind == JsonValueKind.Array)
                     {
-                        var list = new List<JsonElement>();
-                        foreach (var item in payload.EnumerateArray())
-                        {
-                            list.Add(item.Clone());
-                            if (list.Count >= _limit)
-                            {
-                                break;
-                            }
-                        }
-                        var newResults = list.ToArray();
+                        var newResults = FilterSuggestions(payload, _limit, _allowedQueues);
                         EnqueueIfCurrent(version, () =>
                         {
                             _results = newResults;

@@ -29,6 +29,24 @@ using Profile = YandexTrackerCLI.Core.Config.Profile;
 ///   <item><description><c>federated</c> — browser PKCE flow с <c>--federation-id</c>
 ///   (по мотивам <c>yc init --federation-id</c>); требует TTY.</description></item>
 /// </list>
+/// <para>
+/// Глобальный флаг <c>--read-only</c> при вызове <c>yt auth login</c> записывается
+/// в создаваемый профиль как <c>read_only=true</c> — так профиль для автоматики сразу
+/// заводится только на чтение. Флаг действует для всех четырёх типов аутентификации.
+/// Отдельной опции <c>--read-only</c> у подкоманды нет: <c>RootCommandBuilder.ReadOnlyOption</c>
+/// объявлена как <c>Recursive</c>, поэтому подкоманда наследует её, а объявление
+/// одноимённой локальной опции привело бы к конфликту имён.
+/// </para>
+/// <para>
+/// <b>Login в существующий профиль пересоздаёт его политики.</b> <c>read_only</c>,
+/// <c>allowed_queues</c> и <c>allowed_write_issues</c> берутся <i>только</i> из флагов
+/// текущего вызова: <c>--read-only</c> ставит <c>read_only=true</c>, списки очередей и
+/// задач снимаются. Это единственный путь ослабить политику профиля — <c>yt config set</c>
+/// умеет её только ужесточать. Барьер держится на том, что <c>yt config get</c> маскирует
+/// <c>auth.token</c> и <c>auth.private_key_pem</c>: без самих креденшелов повторный login
+/// не сделать. Сохраняется при повторном login только <c>default_format</c> — это
+/// пользовательская настройка вывода, а не граница доступа.
+/// </para>
 /// </remarks>
 public static class AuthLoginCommand
 {
@@ -153,6 +171,10 @@ public static class AuthLoginCommand
                     : OrgType.Yandex360;
                 var orgId = parseResult.GetValue(orgIdOption)!;
                 var profileName = parseResult.GetValue(RootCommandBuilder.ProfileOption) ?? "default";
+                // Глобальная (recursive) опция --read-only здесь означает не «ужесточить текущий
+                // вызов» (login не ходит в API), а «завести профиль только на чтение»: read_only
+                // становится свойством самих креденшелов.
+                var readOnlyFlag = parseResult.GetValue(RootCommandBuilder.ReadOnlyOption);
 
                 var effectiveFormat = CommandFormatHelper.ResolveForCommand(parseResult);
                 var ui = InteractiveUIResolver.Resolve(effectiveFormat);
@@ -178,17 +200,23 @@ public static class AuthLoginCommand
 
                 var store = new ConfigStore(ConfigStore.DefaultPath);
                 var cfg = await store.LoadAsync(ct);
-                // Preserve default_format if the profile already exists — re-login should not
-                // clobber user output preferences.
+                // Login пересоздаёт профиль из переданных креденшелов: политики
+                // (read_only / allowed_queues / allowed_write_issues) берутся ТОЛЬКО из флагов
+                // текущего вызова и потому сбрасываются. Это и есть путь сброса политики,
+                // на который ссылается отказ `yt config set` — он доступен лишь тому, у кого
+                // есть сами креденшелы (config get их маскирует).
+                // Переносится только default_format: настройка вывода, не граница доступа.
                 cfg.Profiles.TryGetValue(profileName, out var prevProfile);
                 var profiles = new Dictionary<string, Profile>(cfg.Profiles)
                 {
                     [profileName] = new Profile(
                         orgType,
                         orgId,
-                        ReadOnly: false,
+                        ReadOnly: readOnlyFlag,
                         auth,
-                        DefaultFormat: prevProfile?.DefaultFormat),
+                        DefaultFormat: prevProfile?.DefaultFormat,
+                        AllowedQueues: null,
+                        AllowedWriteIssues: null),
                 };
                 var defaultName = string.IsNullOrWhiteSpace(cfg.DefaultProfile) ? profileName : cfg.DefaultProfile;
                 await store.SaveAsync(new ConfigFile(defaultName, profiles), ct);

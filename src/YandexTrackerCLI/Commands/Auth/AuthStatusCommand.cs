@@ -8,7 +8,9 @@ using Output;
 
 /// <summary>
 /// Команда <c>yt auth status</c>: печатает JSON с активным профилем,
-/// типом организации и типом аутентификации.
+/// типом организации, типом аутентификации и действующими политиками профиля
+/// (<c>read_only</c>, <c>allowed_queues</c>, <c>allowed_write_issues</c> вместе с источником
+/// последнего — <c>profile</c>, <c>env</c> или <c>profile+env</c>, если действует их пересечение).
 /// </summary>
 public static class AuthStatusCommand
 {
@@ -46,6 +48,28 @@ public static class AuthStatusCommand
                         _ => "unknown",
                     });
                     w.WriteBoolean("read_only", eff.ReadOnly);
+                    w.WriteStartArray("allowed_queues");
+                    foreach (var q in eff.AllowedQueues ?? Array.Empty<string>())
+                    {
+                        w.WriteStringValue(q);
+                    }
+                    w.WriteEndArray();
+                    w.WriteStartArray("allowed_write_issues");
+                    foreach (var i in eff.AllowedWriteIssues ?? Array.Empty<string>())
+                    {
+                        w.WriteStringValue(i);
+                    }
+                    w.WriteEndArray();
+                    // Источник списка виден в выводе намеренно: YT_ALLOWED_WRITE_ISSUES
+                    // сужает значение профиля, поэтому «откуда взялась политика» —
+                    // существенная часть статуса. profile+env означает, что действует
+                    // пересечение двух списков, а не какой-то один из них.
+                    w.WriteString("allowed_write_issues_source", eff.AllowedWriteIssuesSource switch
+                    {
+                        WriteIssuesSource.Env => "env",
+                        WriteIssuesSource.ProfileAndEnv => "profile+env",
+                        _ => "profile",
+                    });
                     w.WriteEndObject();
                 }
 

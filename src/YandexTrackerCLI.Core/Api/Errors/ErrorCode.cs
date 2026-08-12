@@ -12,6 +12,12 @@ public enum ErrorCode
     ServerError,
     NetworkError,
     ConfigError,
+
+    /// <summary>
+    /// The request was blocked by a CLI-side profile policy (for example, a queue outside
+    /// <c>allowed_queues</c>). Distinct from <see cref="Forbidden"/>, which reports a server-side denial.
+    /// </summary>
+    PolicyViolation,
 }
 
 public static class ErrorCodeExtensions
@@ -27,6 +33,7 @@ public static class ErrorCodeExtensions
         ErrorCode.ServerError  => 7,
         ErrorCode.NetworkError => 8,
         ErrorCode.ConfigError  => 9,
+        ErrorCode.PolicyViolation => 10,
         _                      => 1,
     };
 
@@ -41,6 +48,7 @@ public static class ErrorCodeExtensions
         ErrorCode.ServerError  => "server_error",
         ErrorCode.NetworkError => "network_error",
         ErrorCode.ConfigError  => "config_error",
+        ErrorCode.PolicyViolation => "policy_violation",
         _                      => "unexpected",
     };
 }

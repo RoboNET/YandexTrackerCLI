@@ -96,6 +96,10 @@ public static class VersionUpdateCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
+                // Очереди в URL нет — при действующем allowed_queues доспрашиваем владельца.
+                await QueueScopeFilter.EnsureResourceQueueAllowed(
+                    ctx.Client, "versions", id, ctx.Profile, ct);
+
                 var result = await ctx.Client.PatchJsonAsync(
                     $"versions/{Uri.EscapeDataString(id)}",
                     body,

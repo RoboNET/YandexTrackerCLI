@@ -9,6 +9,12 @@ using Output;
 /// Команда <c>yt config set &lt;key&gt; &lt;value&gt;</c>: записывает значение по dotted-path ключу
 /// из allowlist и сохраняет файл конфигурации.
 /// </summary>
+/// <remarks>
+/// Политики профиля через эту команду можно только <b>ужесточить</b> (см.
+/// <see cref="ConfigPolicyGuard"/>): снятие <c>read_only</c> и снятие/расширение
+/// <c>allowed_queues</c>/<c>allowed_write_issues</c> отклоняются с
+/// <see cref="ErrorCode.PolicyViolation"/> (exit 10).
+/// </remarks>
 public static class ConfigSetCommand
 {
     /// <summary>
@@ -48,6 +54,10 @@ public static class ConfigSetCommand
                 }
 
                 var updated = ConfigKeyAccess.WriteValue(profile, key, value);
+                // Политики профиля можно только ужесточить: снятие идёт через пересоздание
+                // профиля (`yt auth login`), а не через ту же команду, которой располагает
+                // ограничиваемый вызывающий.
+                ConfigPolicyGuard.EnsureNotWeakened(profile, updated, name);
                 var profiles = new Dictionary<string, Profile>(cfg.Profiles) { [name] = updated };
                 await store.SaveAsync(new ConfigFile(cfg.DefaultProfile, profiles), ct);
 

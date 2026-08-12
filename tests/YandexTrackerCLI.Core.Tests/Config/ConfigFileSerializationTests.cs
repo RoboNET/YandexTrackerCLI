@@ -72,4 +72,67 @@ public sealed class ConfigFileSerializationTests
         var json = JsonSerializer.Serialize(cfg, TrackerJsonContext.Default.ConfigFile);
         await Assert.That(json).Contains("\"type\": \"iam-static\"");
     }
+
+    [Test]
+    public async Task RoundTrip_AllowedQueues_UsesSnakeCaseKey_AndSurvivesRoundTrip()
+    {
+        var cfg = new ConfigFile("ci", new Dictionary<string, Profile>
+        {
+            ["ci"] = new Profile(
+                OrgType.Cloud, "o", false,
+                new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+                AllowedQueues: new[] { "DEV", "QA" }),
+        });
+
+        var json = JsonSerializer.Serialize(cfg, TrackerJsonContext.Default.ConfigFile);
+        await Assert.That(json).Contains("\"allowed_queues\"");
+
+        var back = JsonSerializer.Deserialize(json, TrackerJsonContext.Default.ConfigFile);
+        await Assert.That(back!.Profiles["ci"].AllowedQueues).IsEquivalentTo(new[] { "DEV", "QA" });
+    }
+
+    [Test]
+    public async Task RoundTrip_WithoutAllowedQueues_OmitsTheKey()
+    {
+        var cfg = new ConfigFile("ci", new Dictionary<string, Profile>
+        {
+            ["ci"] = new Profile(OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")),
+        });
+
+        var json = JsonSerializer.Serialize(cfg, TrackerJsonContext.Default.ConfigFile);
+
+        await Assert.That(json).DoesNotContain("allowed_queues");
+    }
+
+    [Test]
+    public async Task RoundTrip_AllowedWriteIssues_UsesSnakeCaseKey_AndSurvivesRoundTrip()
+    {
+        var cfg = new ConfigFile("ci", new Dictionary<string, Profile>
+        {
+            ["ci"] = new Profile(
+                OrgType.Cloud, "o", false,
+                new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+                AllowedWriteIssues: new[] { "DEV-42", "DEV-43" }),
+        });
+
+        var json = JsonSerializer.Serialize(cfg, TrackerJsonContext.Default.ConfigFile);
+        await Assert.That(json).Contains("\"allowed_write_issues\"");
+
+        var back = JsonSerializer.Deserialize(json, TrackerJsonContext.Default.ConfigFile);
+        await Assert.That(back!.Profiles["ci"].AllowedWriteIssues)
+            .IsEquivalentTo(new[] { "DEV-42", "DEV-43" });
+    }
+
+    [Test]
+    public async Task RoundTrip_WithoutAllowedWriteIssues_OmitsTheKey()
+    {
+        var cfg = new ConfigFile("ci", new Dictionary<string, Profile>
+        {
+            ["ci"] = new Profile(OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")),
+        });
+
+        var json = JsonSerializer.Serialize(cfg, TrackerJsonContext.Default.ConfigFile);
+
+        await Assert.That(json).DoesNotContain("allowed_write_issues");
+    }
 }

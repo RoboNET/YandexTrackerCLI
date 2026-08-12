@@ -15,7 +15,7 @@ internal static class ConfigKeyAccess
 {
     private static readonly string[] Allow =
     {
-        "org_type", "org_id", "read_only", "default_format",
+        "org_type", "org_id", "read_only", "default_format", "allowed_queues", "allowed_write_issues",
         "auth.type", "auth.token", "auth.service_account_id",
         "auth.key_id", "auth.private_key_path", "auth.private_key_pem",
     };
@@ -54,6 +54,8 @@ internal static class ConfigKeyAccess
         "org_id"                  => p.OrgId,
         "read_only"               => p.ReadOnly ? "true" : "false",
         "default_format"          => p.DefaultFormat,
+        "allowed_queues"          => QueuePolicy.FormatList(QueuePolicy.Normalize(p.AllowedQueues)),
+        "allowed_write_issues"    => IssueWritePolicy.FormatList(IssueWritePolicy.Normalize(p.AllowedWriteIssues)),
         "auth.type"               => p.Auth.Type switch
         {
             AuthType.OAuth          => "oauth",
@@ -83,6 +85,8 @@ internal static class ConfigKeyAccess
         "org_id"                  => p with { OrgId = value },
         "read_only"               => p with { ReadOnly = ParseBool(value) },
         "default_format"          => p with { DefaultFormat = ValidateFormat(value) },
+        "allowed_queues"          => p with { AllowedQueues = ParseAllowedQueues(value) },
+        "allowed_write_issues"    => p with { AllowedWriteIssues = ParseAllowedWriteIssues(value) },
         "auth.type"               => p with { Auth = p.Auth with { Type = ParseAuthType(value) } },
         "auth.token"              => p with { Auth = p.Auth with { Token = value } },
         "auth.service_account_id" => p with { Auth = p.Auth with { ServiceAccountId = value } },
@@ -91,6 +95,34 @@ internal static class ConfigKeyAccess
         "auth.private_key_pem"    => p with { Auth = p.Auth with { PrivateKeyPem = value } },
         _ => throw new TrackerException(ErrorCode.InvalidArgs, $"Unknown config key: {key}"),
     };
+
+    /// <summary>
+    /// Разбирает значение <c>allowed_queues</c>: список ключей очередей через запятую.
+    /// </summary>
+    /// <param name="v">Строка вида <c>DEV,OPS,QA</c>; пустая строка снимает ограничение.</param>
+    /// <returns>
+    /// Нормализованный массив очередей, либо <c>null</c>, если после разбора не осталось
+    /// ни одного элемента — тогда ключ вообще не пишется в конфиг и ограничение снято.
+    /// </returns>
+    private static string[]? ParseAllowedQueues(string v)
+    {
+        var parsed = QueuePolicy.ParseList(v);
+        return parsed.Length == 0 ? null : parsed;
+    }
+
+    /// <summary>
+    /// Разбирает значение <c>allowed_write_issues</c>: список ключей задач через запятую.
+    /// </summary>
+    /// <param name="v">Строка вида <c>DEV-42,DEV-43</c>; пустая строка снимает ограничение.</param>
+    /// <returns>
+    /// Нормализованный массив ключей, либо <c>null</c>, если после разбора не осталось
+    /// ни одного элемента — тогда ключ вообще не пишется в конфиг и ограничение снято.
+    /// </returns>
+    private static string[]? ParseAllowedWriteIssues(string v)
+    {
+        var parsed = IssueWritePolicy.ParseList(v);
+        return parsed.Length == 0 ? null : parsed;
+    }
 
     private static string ValidateFormat(string v)
     {
