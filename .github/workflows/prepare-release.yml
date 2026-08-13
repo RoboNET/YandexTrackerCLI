@@ -1,0 +1,466 @@
+name: prepare-release
+
+# Готовит релиз: проставляет версию в файлы, которые доставляются НЕ через бинарь
+# (.claude-plugin/plugin.json и маркер yt-version в .claude/skills/yt/SKILL.md),
+# вливает это в main и вешает тег vX.Y.Z НА ЭТОТ коммит. Поэтому релизный тег несёт
+# уже проставленные значения, и плагинная/ручная доставка skill'а согласована с бинарём.
+#
+# Тег пушится PAT'ом (RELEASE_TOKEN, fallback HOMEBREW_TAP_TOKEN), а не GITHUB_TOKEN:
+# события от GITHUB_TOKEN не триггерят workflow'ы (анти-рекурсия GitHub Actions),
+# и build.yml на такой тег просто не запустился бы — релиза не случилось бы вовсе.
+#
+# Коммит едет через PR со squash-merge: main закрыт ruleset'ом (pull_request +
+# linear history), прямой push отклоняется. PR создаётся GITHUB_TOKEN'ом, поэтому CI на
+# самом PR не запускается. А вот merge выполняется PAT'ом — от него push на main считается
+# действием пользователя и build.yml на main запускается. Это не косметика: перед мутацией
+# main мы требуем зелёный прогон build.yml на вершине main, и если бы merge шёл
+# GITHUB_TOKEN'ом, вершиной main после каждого релиза оставался бы stamp-коммит, на котором
+# прогона нет и не будет, — следующий релиз упирался бы в собственную проверку.
+# Рекурсии здесь нет: build.yml на push в main только гоняет тесты, а prepare-release
+# запускается исключительно вручную (workflow_dispatch).
+# Дополнительная страховка на случай, если прогон на stamp-коммите всё же не появился
+# (релиз до этой правки, отключённый CI): проверка умеет отступить на родителя stamp-коммита
+# — содержательный код там тот же, stamp меняет ровно два файла с версией.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия релиза без префикса v (например 0.6.0 или 0.6.0-rc.1)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Только показать, что будет проставлено (без коммита и тега)'
+        required: false
+        default: false
+        type: boolean
+      skip_main_ci_check:
+        description: 'Не требовать зелёного прогона CI на вершине main (аварийный обход)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Права PAT проверяем ДО любой мутации main: непустой секрет ещё не значит, что токен
+      # выдан на этот репозиторий. Иначе `gh api .../git/refs` упал бы 403 уже после того,
+      # как коммит с версией влился в main, — main изменён, тега нет.
+      - name: Check release token and its permissions
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry-run: проверка токена пропущена."
+            exit 0
+          fi
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "::error::Нужен PAT в secrets.RELEASE_TOKEN (или HOMEBREW_TAP_TOKEN): тег, запушенный GITHUB_TOKEN, не запустит build.yml."
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+            echo "::error::PAT не видит репозиторий ${GITHUB_REPOSITORY}. Скорее всего он выдан на другой репозиторий (типичный случай — HOMEBREW_TAP_TOKEN для tap-репо)."
+            exit 1
+          fi
+          CAN_PUSH=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.permissions.push // false')
+          if [ "$CAN_PUSH" != "true" ]; then
+            echo "::error::У PAT нет права записи в ${GITHUB_REPOSITORY} — тег создать не получится."
+            exit 1
+          fi
+          echo "PAT видит ${GITHUB_REPOSITORY} и имеет право записи."
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate version and tag
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION#v}"
+          # Строгий semver (официальный шаблон для core + pre-release):
+          #  * ведущие нули запрещены — MinVer проигнорировал бы тег v01.2.3, и бинарь
+          #    собрался бы с default-версией, разъехавшись и с тегом, и с файлами;
+          #  * внутри pre-release identifier дефис разрешён (1.0.0-rc-1) — это валидный semver;
+          #  * числовой identifier тоже без ведущих нулей (1.2.3-rc.01 — невалиден).
+          # Build-metadata (+meta) намеренно не поддерживается: '+' в имени тега — источник
+          # неприятностей в URL артефактов.
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+          if ! printf '%s' "$VERSION" | grep -Eq "$SEMVER"; then
+            echo "::error::Некорректная версия '$INPUT_VERSION'. Ожидается semver без ведущих нулей: 0.6.0, 0.6.0-rc.1, 1.0.0-rc-1."
+            exit 1
+          fi
+
+          # Тег уже есть? Перевыпуск допустим ровно в одном случае: релиз по нему не опубликован
+          # И сборка по нему уже не идёт, то есть тег действительно висячий. Артефактов у
+          # пользователей в этом случае нет, а требовать поднимать версию из-за упавшей сборки —
+          # дороже. Все прочие состояния — отказ: снести тег живого или ещё собирающегося релиза
+          # хуже, чем не выпустить релиз сейчас.
+          DELETE_TAG=false
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            # «Релиза нет» и «GitHub не ответил» — разные состояния. Прежний `2>/dev/null` их
+            # склеивал: rate limit или 502 выглядели как «тег висячий», и тег живого релиза
+            # пошёл бы под снос. Непонятный ответ теперь означает отказ, а не разрешение.
+            set +e
+            RELEASE_ERR=$(gh release view "v$VERSION" --json tagName 2>&1 >/dev/null)
+            RELEASE_RC=$?
+            set -e
+            if [ "$RELEASE_RC" -eq 0 ]; then
+              echo "::error::Релиз v$VERSION уже опубликован. Перевыпуск под тем же тегом не поддерживается — поднимите версию."
+              exit 1
+            fi
+            if ! printf '%s' "$RELEASE_ERR" | grep -qiE 'release not found|HTTP 404'; then
+              echo "::error::Тег v$VERSION существует, но выяснить, опубликован ли по нему релиз, не удалось (gh: ${RELEASE_ERR//$'\n'/ }). Продолжать вслепую нельзя — тег живого релиза был бы снесён. Повторите запуск, когда GitHub API ответит."
+              exit 1
+            fi
+
+            # Релиза нет — но сборка по тегу может идти прямо сейчас, и тогда «релиза нет» это
+            # норма, а не признак висячего тега. Снос тега в этот момент запустил бы вторую
+            # сборку той же версии параллельно первой.
+            if ! TAG_RUNS=$(gh run list --workflow build.yml --branch "v$VERSION" --limit 50 \
+                              --json status,conclusion,url 2>"$RUNNER_TEMP/tag-runs.err"); then
+              echo "::error::Не удалось получить прогоны build.yml по тегу v$VERSION (gh: $(tr '\n' ' ' <"$RUNNER_TEMP/tag-runs.err")). Не зная, идёт ли сборка, тег сносить нельзя — повторите запуск."
+              exit 1
+            fi
+            ACTIVE=$(printf '%s' "$TAG_RUNS" | jq -r '[.[] | select(.status != "completed")] | length')
+            if [ "$ACTIVE" != "0" ]; then
+              echo "Активные прогоны по тегу v$VERSION:"
+              printf '%s' "$TAG_RUNS" | jq -r '.[] | select(.status != "completed") | "  \(.status) \(.url)"'
+              echo "::error::По тегу v$VERSION прямо сейчас идёт сборка build.yml ($ACTIVE прогон(ов)). Релиза ещё нет просто потому, что сборка не закончилась. Дождитесь её: если она опубликует релиз — поднимите версию, если упадёт — запустите prepare-release заново."
+              exit 1
+            fi
+            echo "::warning::Тег v$VERSION существует, релиза по нему нет и сборка не идёт — считаем тег висячим, он будет переставлен."
+            DELETE_TAG=true
+          fi
+
+          # SHA, на котором проверяется зелёный CI и от которого ответвляется stamp-коммит.
+          # Дальше по шагам мы требуем, чтобы main оставался ровно на нём: тег обязан лечь на
+          # проверенный код, а не на то, что успело влиться за время прогона.
+          BASE_SHA=$(git rev-parse HEAD)
+
+          {
+            echo "version=$VERSION"
+            echo "delete_tag=$DELETE_TAG"
+            echo "base_sha=$BASE_SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Готовим v$VERSION от $BASE_SHA (снос висячего тега: $DELETE_TAG)"
+
+      # Тег обязан лечь на код, который уже собирался. Сам stamp-PR CI не гоняет (создан
+      # GITHUB_TOKEN'ом), так что проверяем вершину main ДО простановки версии — она и есть
+      # содержательный код будущего тега.
+      - name: Require green CI on main
+        if: ${{ inputs.dry_run != true && inputs.skip_main_ci_check != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ steps.validate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          # Пустой ответ от gh — не «прогонов нет», а «мы не знаем». Проверка fail-closed.
+          if ! RUNS_ALL=$(gh run list --workflow build.yml --branch main --limit 100 \
+                            --json headSha,status,conclusion,url 2>"$RUNNER_TEMP/main-runs.err"); then
+            echo "::error::Не удалось получить прогоны build.yml на main (gh: $(tr '\n' ' ' <"$RUNNER_TEMP/main-runs.err")). Проверка зелёного CI не выполнена — повторите запуск."
+            exit 1
+          fi
+
+          # Вершина main после релиза — squash-коммит stamp-PR. Merge идёт PAT'ом, поэтому
+          # build.yml на нём запускается и обычно прогон есть. Но у релизов, сделанных до этой
+          # правки (merge шёл GITHUB_TOKEN'ом), прогона на stamp-коммите нет и не появится.
+          # Чтобы проверка не превращалась в штатно обходимую через skip_main_ci_check, для
+          # такого коммита отступаем на родителя: содержательного кода stamp не меняет.
+          # Признак строгий — и тема коммита, и ровно два изменённых файла: иначе под «пропустить
+          # CI» подошёл бы любой коммит с подходящим сообщением.
+          is_stamp_commit() {
+            local c="$1" subject files
+            subject=$(git log -1 --format=%s "$c")
+            case "$subject" in
+              'chore: release v'*|'chore: stamp version '*) ;;
+              *) return 1 ;;
+            esac
+            files=$(git diff --name-only "$c^" "$c" | LC_ALL=C sort | tr '\n' ' ')
+            [ "$files" = ".claude-plugin/plugin.json .claude/skills/yt/SKILL.md " ]
+          }
+
+          SHA="$BASE_SHA"
+          COMPLETED=0
+          for _ in 1 2 3 4 5; do
+            COMPLETED=$(printf '%s' "$RUNS_ALL" | jq -r --arg sha "$SHA" \
+              '[.[] | select(.headSha == $sha and .status == "completed")] | length')
+            if [ "$COMPLETED" != "0" ]; then
+              break
+            fi
+            if ! is_stamp_commit "$SHA"; then
+              break
+            fi
+            PARENT=$(git rev-parse "$SHA^")
+            echo "На $SHA прогона нет, но это релизный stamp-коммит — проверяем его родителя $PARENT."
+            SHA="$PARENT"
+          done
+
+          if [ "$COMPLETED" = "0" ]; then
+            echo "::error::Нет завершённого прогона build.yml на вершине main ($BASE_SHA; проверяли вплоть до $SHA). Дождитесь CI (или запустите с skip_main_ci_check=true, осознавая, что тег ляжет на непроверенный код)."
+            exit 1
+          fi
+          FAILED=$(printf '%s' "$RUNS_ALL" | jq -r --arg sha "$SHA" \
+            '[.[] | select(.headSha == $sha and .status == "completed" and .conclusion != "success")] | length')
+          if [ "$FAILED" != "0" ]; then
+            printf '%s' "$RUNS_ALL" | jq -r --arg sha "$SHA" \
+              '.[] | select(.headSha == $sha and .status == "completed" and .conclusion != "success") | "  \(.conclusion) \(.url)"'
+            echo "::error::Прогон build.yml на $SHA не зелёный. Чините main до релиза."
+            exit 1
+          fi
+          echo "CI зелёный на $SHA (вершина main — $BASE_SHA)."
+
+      - name: Stamp version into plugin.json and SKILL.md
+        id: stamp
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKILL=".claude/skills/yt/SKILL.md"
+          PLUGIN=".claude-plugin/plugin.json"
+
+          jq --arg v "$VERSION" '.version = $v' "$PLUGIN" > "$PLUGIN.tmp"
+          mv "$PLUGIN.tmp" "$PLUGIN"
+
+          if ! grep -Eq '<!--[[:space:]]*yt-version:' "$SKILL"; then
+            echo "::error::В $SKILL нет маркера '<!-- yt-version: ... -->' — простановка версии невозможна."
+            exit 1
+          fi
+          # По регулярке, а не по литералу: в маркере лежит версия прошлого релиза, и чтобы
+          # заменить её по литералу, её пришлось бы сначала откуда-то узнать. Заменяем ТОЛЬКО
+          # первое вхождение — упоминания маркера в тексте скила переписывать нечего.
+          perl -0pi -e "s/<!--\s*yt-version:[^>]*-->/<!-- yt-version: $VERSION -->/" "$SKILL"
+
+          # marketplace.json версию не дублирует — авторитет по версии плагина один: plugin.json.
+          # Поле version в записи маркетплейса запрещено намеренно: Claude Code берёт версию из
+          # plugin.json и молча перебивает ею значение из entry, так что дубль только разъехался бы.
+          if jq -e '.plugins[] | has("version")' .claude-plugin/marketplace.json >/dev/null 2>&1; then
+            echo "::error::В marketplace.json у записи плагина появилось поле version. Оно запрещено: авторитет — plugin.json, дубль молча разъедется. Удалите поле."
+            exit 1
+          fi
+
+          echo "--- diff ---"
+          git --no-pager diff -- "$PLUGIN" "$SKILL" || true
+          if git diff --quiet -- "$PLUGIN" "$SKILL"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Файлы уже содержат версию $VERSION — коммит не нужен."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit to main via PR
+        id: commit
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Merge выполняем PAT'ом, а не GITHUB_TOKEN'ом: только тогда push на main запустит
+          # build.yml, и следующий релиз найдёт зелёный прогон на вершине main.
+          MERGE_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          CHANGED: ${{ steps.stamp.outputs.changed }}
+          BASE_SHA: ${{ steps.validate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          # gh под `set -e` роняет шаг на транзиентном сбое (rate limit, 502). Между merge и
+          # тегом это самый неприятный момент: main уже изменён, а тега ещё нет. Поэтому все
+          # опросы состояния идут через ретраи и никогда не валят шаг сами по себе.
+          gh_retry() {
+            local out=""
+            for _ in 1 2 3; do
+              if out=$(gh "$@" 2>/dev/null); then
+                printf '%s' "$out"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          # Зелёный CI проверен на BASE_SHA. Если main за время прогона уехал, проверенного
+          # кода на вершине больше нет: тег ушёл бы на коммиты, которых никто не проверял, а на
+          # пути changed=false — вообще на произвольную новую вершину. Требуем совпадения.
+          REMOTE_SHA=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ -z "$REMOTE_SHA" ]; then
+            echo "::error::Не удалось определить вершину main."
+            exit 1
+          fi
+          if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
+            echo "::error::main уехал во время прогона: проверяли $BASE_SHA, сейчас вершина $REMOTE_SHA. Тег ложился бы на непроверенный код — запустите prepare-release заново."
+            exit 1
+          fi
+
+          if [ "$CHANGED" != "true" ]; then
+            # Проставлять нечего: версия уже в файлах. Тег ляжет на проверенную вершину.
+            echo "sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Имя ветки уникально по прогону: при фиксированном имени повторный запуск той же
+          # версии после сбоя между push и merge упирался бы в non-fast-forward push и требовал
+          # ручной чистки.
+          BRANCH="chore/release-$VERSION-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add .claude-plugin/plugin.json .claude/skills/yt/SKILL.md
+          git commit -m "chore: stamp version $VERSION into plugin.json and SKILL.md"
+          git push origin "$BRANCH"
+
+          # Номер PR запоминаем сразу: обращаться к PR по имени head-ветки нельзя — после
+          # merge ветка удаляется, и `gh pr view "$BRANCH"` перестаёт что-либо находить.
+          PR_URL=$(gh pr create --base main --head "$BRANCH" \
+            --title "chore: release v$VERSION" \
+            --body "Простановка версии $VERSION перед тегом v$VERSION (plugin.json + маркер yt-version в SKILL.md).")
+          PR_NUMBER="${PR_URL##*/}"
+          echo "PR #$PR_NUMBER: $PR_URL"
+
+          # Merge и удаление ветки — разные операции. Раньше они шли одной командой с
+          # `--delete-branch`, и сбой удаления ветки после успешного merge делал вид, что merge
+          # не прошёл: fallback пытался смержить уже смерженный PR и валил шаг с изменённым main.
+          if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge "$PR_NUMBER" --squash; then
+            STATE=$(gh_retry pr view "$PR_NUMBER" --json state --jq '.state' || echo "")
+            if [ "$STATE" = "OPEN" ]; then
+              echo "Прямой merge не прошёл — пробуем auto-merge."
+              # Auto-merge включён в репозитории далеко не всегда; без обработки шаг просто
+              # падал бы под `set -e`, оставляя открытый PR и запушенную ветку.
+              if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge "$PR_NUMBER" --squash --auto; then
+                {
+                  echo "::error::Смержить PR #$PR_NUMBER не удалось: прямой merge отклонён, auto-merge недоступен (скорее всего не включён в настройках репозитория) или запрещён для PAT."
+                  echo "Что делать: смержите PR вручную squash'ем ($PR_URL), затем запустите prepare-release заново с той же версией — файлы уже проставлены, второй запуск пойдёт по короткому пути и только повесит тег."
+                  echo "Если релиз отменяется — закройте PR и удалите ветку $BRANCH."
+                } >&2
+                exit 1
+              fi
+            elif [ "$STATE" = "MERGED" ]; then
+              echo "PR уже смержен."
+            else
+              echo "::error::Merge не прошёл, состояние PR: '${STATE:-неизвестно}'. Разберитесь с PR вручную ($PR_URL); ветка $BRANCH осталась запушенной."
+              exit 1
+            fi
+          fi
+
+          # Дожидаемся, пока PR реально вольётся: тег обязан лечь на итоговый коммит main.
+          MERGED=false
+          for _ in $(seq 1 60); do
+            STATE=$(gh_retry pr view "$PR_NUMBER" --json state --jq '.state' || echo "")
+            if [ "$STATE" = "MERGED" ]; then
+              MERGED=true
+              break
+            fi
+            if [ "$STATE" = "CLOSED" ]; then
+              echo "::error::PR #$PR_NUMBER закрыт без merge — релиз прерван."
+              exit 1
+            fi
+            sleep 10
+          done
+          if [ "$MERGED" != "true" ]; then
+            echo "::error::PR #$PR_NUMBER не влился за отведённое время — тег не ставим."
+            exit 1
+          fi
+
+          SHA=$(gh_retry pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' || echo "")
+          if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+            echo "::error::Не удалось получить merge-коммит PR #$PR_NUMBER — тег не ставим."
+            exit 1
+          fi
+
+          # Удаление ветки — уборка, а не часть релиза: не валим шаг, если не получилось.
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${BRANCH}" >/dev/null 2>&1 \
+            || echo "::warning::Не удалось удалить ветку $BRANCH — уберите вручную."
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Версия проставлена в main, коммит $SHA"
+
+      # Тег ставится на конкретный SHA; убеждаемся, что именно в нём лежит нужная версия
+      # (main мог уехать на пути changed=false, squash-коммит мог оказаться не тем).
+      - name: Verify stamped files at target commit
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          PLUGIN_VERSION=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.claude-plugin/plugin.json?ref=${SHA}" \
+            --jq '.content' | tr -d '\n' | base64 -d | jq -r '.version')
+          if [ "$PLUGIN_VERSION" != "$VERSION" ]; then
+            echo "::error::В коммите $SHA plugin.json несёт версию '$PLUGIN_VERSION', ожидалась '$VERSION'. Тег не ставим."
+            exit 1
+          fi
+
+          SKILL_TEXT=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.claude/skills/yt/SKILL.md?ref=${SHA}" \
+            --jq '.content' | tr -d '\n' | base64 -d)
+          # Маркер вырезаем целиком и только потом снимаем обёртку. Прежний вариант хватал
+          # «всё до пробела или '>'» и на записи без пробелов (<!--yt-version:0.6.0-->) вернул бы
+          # '0.6.0--'. Плюс `|| true`: без маркера grep возвращает 1, и под pipefail шаг умирал бы
+          # молча, не дойдя до понятного ::error:: ниже.
+          MARKER=$(printf '%s' "$SKILL_TEXT" | grep -m1 -oE '<!--[[:space:]]*yt-version:[^>]*-->') || true
+          if [ -z "$MARKER" ]; then
+            echo "::error::В коммите $SHA в SKILL.md нет маркера '<!-- yt-version: ... -->'. Тег не ставим."
+            exit 1
+          fi
+          SKILL_VERSION=$(printf '%s' "$MARKER" \
+            | sed -E 's/^<!--[[:space:]]*yt-version:[[:space:]]*//; s/[[:space:]]*-->$//')
+          if [ "$SKILL_VERSION" != "$VERSION" ]; then
+            echo "::error::В коммите $SHA маркер yt-version несёт '$SKILL_VERSION', ожидалась '$VERSION'. Тег не ставим."
+            exit 1
+          fi
+          echo "Коммит $SHA несёт версию $VERSION в обоих файлах."
+
+      - name: Create and push tag
+        if: ${{ inputs.dry_run != true }}
+        env:
+          # PAT, а не GITHUB_TOKEN: иначе push тега не запустит build.yml.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          SHA: ${{ steps.commit.outputs.sha }}
+          DELETE_TAG: ${{ steps.validate.outputs.delete_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$DELETE_TAG" = "true" ]; then
+            echo "Сносим висячий тег v$VERSION (релиза по нему нет)."
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/v$VERSION" >/dev/null
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/v$VERSION" \
+            -f sha="$SHA" > /dev/null
+          echo "Тег v$VERSION создан на $SHA — build.yml соберёт артефакты и опубликует релиз."
+
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+          SHA: ${{ steps.commit.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # pre-release определяется по наличию суффикса; авторитет по признаку — build.yml,
+          # который решает то же самое сам, здесь это только для человека в summary.
+          IS_PRERELEASE=false
+          case "$VERSION" in *-*) IS_PRERELEASE=true ;; esac
+          {
+            echo "## prepare-release v$VERSION"
+            echo ""
+            echo "- pre-release: $IS_PRERELEASE"
+            echo "- dry-run: $DRY_RUN"
+            echo "- коммит main: ${SHA:-—}"
+            echo ""
+            echo "Дальше отрабатывает build.yml на push тега: тесты → NativeAOT-сборки → GitHub Release."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -652,70 +652,100 @@ yt --log-raw --log-file ~/yt-raw.log auth login --type federated ...
 
 ## AI-ассистенты
 
-`yt` ставит skill в пять разных AI-ассистентов одной командой — [Claude Code](https://docs.anthropic.com/en/docs/claude-code/skills), [OpenAI Codex](https://developers.openai.com/codex/skills), Gemini CLI, Cursor IDE и GitHub Copilot:
+Skill для AI-ассистентов лежит в репозитории — [`.claude/skills/yt/SKILL.md`](.claude/skills/yt/SKILL.md). Это и есть доставляемый артефакт: он содержит шпаргалку команд, exit-коды, паттерны парсинга JSON и правила безопасности (read-only, подтверждение перед mutating). После установки ассистент умеет пользоваться `yt` без подсказок пользователя.
+
+Skill можно поставить и до установки самого `yt` — инструкция по установке бинаря есть внутри skill'а, ассистент доставит его сам при первом использовании.
+
+### Claude Code — маркетплейс плагинов
+
+Репозиторий одновременно является плагином Claude Code ([`.claude-plugin/plugin.json`](.claude-plugin/plugin.json)) и источником плагинов ([`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json)), поэтому его можно добавить как маркетплейс и поставить плагин по имени:
 
 ```bash
-yt skill install                        # TTY → интерактивный prompt (выбор ассистентов + scope + подтверждение)
-yt skill install --no-prompt            # CI/script: ставит во все 5 (Claude+Codex+Gemini+Cursor; Copilot global → skipped)
-yt skill install --target claude        # только Claude (явный target — prompt не запускается)
-yt skill install --target codex         # только Codex
-yt skill install --target gemini        # только Gemini
-yt skill install --target cursor        # только Cursor
-yt skill install --target copilot --scope project --project-dir .  # Copilot — только project-scope
-yt skill install --scope project        # все 5 target'ов в текущий проект
-yt skill install --scope project --project-dir /path/to/repo
-yt skill status                         # что установлено + какая версия + up_to_date
-yt skill update                         # перезаписать установленные локации актуальной версией CLI
-yt skill check                          # ручная проверка устаревших skill (TTY → prompt; pipe → JSON warning)
-yt skill check --no-prompt              # только статус, без интерактива
-yt skill check --reset-prompt-state     # сбросить «больше не спрашивать»
-yt skill uninstall                      # удалить
-yt skill show --target claude           # напечатать что было бы записано (claude/codex/gemini/cursor/copilot)
+claude plugin marketplace add RoboNET/YandexTrackerCLI
+claude plugin install yt@yandex-tracker-cli
 ```
 
-**Интерактивный режим `yt skill install`.** Если вы запускаете `yt skill install` в обычном терминале без флагов, CLI спросит куда устанавливать skill: предложит чек-лист ассистентов (помечает [✓] те, у кого обнаружен базовый каталог `~/.claude/`, `~/.gemini/`, …), затем спросит scope (global / project) и подтвердит перезапись существующих файлов.
+То же самое из сессии Claude Code: `/plugin marketplace add RoboNET/YandexTrackerCLI`, затем `/plugin install yt@yandex-tracker-cli`.
 
-В non-TTY (pipe/CI) или при передаче `--no-prompt` / явных `--target` / `--scope` интерактив отключается и используется тот же default-flow что и раньше (`--target all --scope global`).
+Здесь `yandex-tracker-cli` — имя маркетплейса (поле `name` в `marketplace.json`), `yt` — имя плагина (поле `name` в `plugin.json`).
 
-| Target  | Scope   | Путь                                                          | Формат файла |
-| ------- | ------- | ------------------------------------------------------------- | ------------ |
-| Claude  | Global  | `~/.claude/skills/yt/SKILL.md`                                | SKILL.md as-is |
-| Claude  | Project | `<projectDir>/.claude/skills/yt/SKILL.md`                     | SKILL.md as-is |
-| Codex   | Global  | `~/.agents/skills/yt/SKILL.md`                                | SKILL.md as-is |
-| Codex   | Project | `<projectDir>/.agents/skills/yt/SKILL.md`                     | SKILL.md as-is |
-| Gemini  | Global  | `~/.gemini/skills/yt/SKILL.md`                                | SKILL.md as-is |
-| Gemini  | Project | `<projectDir>/.gemini/skills/yt/SKILL.md`                     | SKILL.md as-is |
-| Cursor  | Global  | `~/.cursor/rules/yt.mdc`                                      | translated `.mdc` (`description` / `globs` / `alwaysApply`) |
-| Cursor  | Project | `<projectDir>/.cursor/rules/yt.mdc`                           | translated `.mdc` |
-| Copilot | Global  | **не поддерживается** — `--target all --scope global` тихо пропускает | — |
-| Copilot | Project | `<projectDir>/.github/instructions/yt.instructions.md`        | translated `.instructions.md` (`applyTo: "**"`) |
+Обновление: `claude plugin update yt@yandex-tracker-cli` (или `/plugin update` в сессии).
 
-Claude / Codex / Gemini получают полный SKILL.md (с YAML frontmatter `name: yt`). Cursor и Copilot получают переписанный frontmatter под их форматы — body skill'а одинаковое, версия одинаковая. Маркер `<!-- yt-version: X.Y.Z -->` сохраняется во всех вариантах для определения актуальности.
+### Остальные ассистенты — универсальные установщики
 
-Skill содержит шпаргалку команд, exit-коды, паттерны парсинга JSON, правила безопасности (read-only, подтверждение перед mutating). После установки AI-ассистент знает как пользоваться `yt` без подсказок пользователя.
-
-После `brew upgrade yt` рекомендовано запустить `yt skill update` — перезапишет установленные локации актуальной версией. Можно положиться на встроенный auto-check: при первом запуске CLI после апдейта в TTY появится prompt с предложением обновить (выбор `Y`/`n`/`never` запоминается); в pipe выводится один раз JSON-warning в stderr. Отключить: `--no-skill-check` или `YT_SKILL_CHECK=0`.
-
-### Установка skill без CLI — skills.sh и плагин Claude Code
-
-Skill можно поставить и до установки самого `yt`, прямо из репозитория (инструкция по установке бинаря есть внутри skill'а — ассистент доставит его сам при первом использовании).
-
-[skills.sh](https://skills.sh) — универсальный установщик skill'ов для 70+ кодинг-агентов:
+Единого каталога, который читали бы все агенты, нет: у каждого свой путь и свой формат. Универсальные установщики знают эту раскладку и сами кладут skill туда, куда нужно конкретному агенту; `~/.agents/skills/` по спецификации [Agent Skills](https://agentskills.io) — общая раскладка, которую читает часть агентов (Codex и те, кто следует спецификации), но не все.
 
 ```bash
 npx skills add RoboNET/YandexTrackerCLI                                # интерактивный выбор агентов
 npx skills add RoboNET/YandexTrackerCLI -g -a claude-code -a codex -y  # non-interactive / CI
+
+gh skill install RoboNET/YandexTrackerCLI                              # то же самое через gh (нужен gh >= 2.90.0)
 ```
 
-Claude Code дополнительно видит репозиторий как плагин (манифест `.claude-plugin/plugin.json`), поэтому его можно федерировать в любой плагин-маркетплейс записью вида:
+Команда `gh skill` появилась в GitHub CLI 2.90.0. На более старом `gh` она отваливается с `unknown command "skill"` — обновите `gh` или используйте `npx skills add`.
+
+### Вручную
+
+Скопировать файл туда, где его читает ваш ассистент (каталог сначала нужно создать — `curl` его не заводит):
+
+```bash
+mkdir -p ~/.agents/skills/yt
+curl -sSfL https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/v0.6.0/.claude/skills/yt/SKILL.md \
+  -o ~/.agents/skills/yt/SKILL.md
+```
+
+Пин на тег работает начиная с **v0.6.0**: до него в теге лежала версия предыдущего релиза, а `marketplace.json` в репозитории ещё не было. На более ранние теги пиниться не нужно.
+
+Типовые пути: `~/.claude/skills/yt/SKILL.md` (Claude Code), `~/.agents/skills/yt/SKILL.md` (Codex и всё, что следует Agent Skills), `~/.gemini/skills/yt/SKILL.md` (Gemini CLI), `<project>/.github/instructions/` (GitHub Copilot — только project-scope).
+
+### CI и Dockerfile
+
+Пиньте версию на релизный тег (v0.6.0 и новее) — иначе образ пересобирается с плавающим содержимым `main`:
+
+```dockerfile
+RUN mkdir -p /root/.agents/skills/yt \
+ && curl -sSfL https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/v0.6.0/.claude/skills/yt/SKILL.md \
+      -o /root/.agents/skills/yt/SKILL.md
+```
+
+Для плагинной установки Claude Code пин выражается полем `ref` внутри объекта `source` в записи маркетплейса — так плагин федерируется в свой или чужой маркетплейс:
 
 ```json
-{ "name": "yt", "source": { "source": "github", "repo": "RoboNET/YandexTrackerCLI" } }
+{
+  "name": "yt",
+  "source": { "source": "url", "url": "https://github.com/RoboNET/YandexTrackerCLI.git", "ref": "v0.6.0" }
+}
 ```
 
-и ставить через `/plugin install yt@<marketplace>` — skill будет обновляться вместе с репозиторием.
+Без `ref` запись отслеживает `main`: `claude plugin marketplace add <repo>` тоже отслеживает ветку по умолчанию, отдельного флага для пина у этой команды нет. Краткая форма без пина — `{ "name": "yt", "source": { "source": "github", "repo": "RoboNET/YandexTrackerCLI" } }`.
 
-Канонический способ — всё же `yt skill install`: он штампует версию CLI в маркер `yt-version` и работает с `yt skill status`/`update`/`check`. Копии, установленные через skills.sh в те же пути (`~/.claude/skills/yt/`, `~/.agents/skills/yt/`), содержат неподставленный маркер `{VERSION}`; на работу ассистента это не влияет, но `yt skill status` не сможет определить их актуальность.
+### Версия skill'а
+
+Сразу после frontmatter в SKILL.md стоит маркер `<!-- yt-version: X.Y.Z -->`. Он проставляется релизным workflow `prepare-release` **до** создания тега — одновременно с `version` в `plugin.json`. Поэтому релизный тег несёт согласованные версии, и любой путь доставки (маркетплейс, `npx skills add`, `gh skill install`, ручное копирование) с пином на тег даёт одинаковое содержимое.
+
+Между релизами `main` уходит вперёд маркера: правило «изменил публичный API — обнови SKILL.md» действует постоянно, а версия проставляется только в релизном коммите. Если нужна предсказуемость — пиньте на тег.
+
+### Миграция: команд `yt skill *` больше нет
+
+Начиная с **0.6.0** CLI не устанавливает skill (в 0.5.0 и раньше команды ещё есть). Удалены команды `yt skill install`, `status`, `check`, `update`, `uninstall`, `show`, а вместе с ними авто-проверка актуальности при каждом запуске `yt`. Причина: доставка skill'ов — задача менеджера плагинов и универсальных установщиков, а собственный установщик внутри бинаря дублировал их и требовал отдельной инфраструктуры (маркер версии в бинаре, состояние prompt'а, разбор чужих форматов).
+
+Что изменилось для вас:
+
+- **Файлы, установленные прежними версиями, остались на диске и больше не обновляются.** Удалите их вручную и поставьте skill заново одним из способов выше:
+
+  ```bash
+  rm -rf ~/.claude/skills/yt/ \
+         ~/.agents/skills/yt/ \
+         ~/.gemini/skills/yt/ \
+         ~/.cursor/rules/yt.mdc
+  # project-scope Copilot — в каждом репозитории отдельно:
+  rm -f <project>/.github/instructions/yt.instructions.md
+  ```
+
+  Проверьте также project-scope копии в своих репозиториях: `<project>/.claude/skills/yt/`, `<project>/.agents/skills/yt/`, `<project>/.gemini/skills/yt/`, `<project>/.cursor/rules/yt.mdc`.
+
+- **Env-переменная `YT_SKILL_CHECK` и флаг `--no-skill-check` больше не действуют.** Флаг теперь приводит к ошибке `Unrecognized command or argument`; уберите его из скриптов и алиасов. Env-переменная просто игнорируется — отключать нечего, авто-проверки нет.
+- **Файл состояния `~/.cache/yandex-tracker/skill-prompt-state.json` больше не используется** — можно удалить.
 
 ## Сборка из исходников
 
@@ -749,22 +779,23 @@ yt --version
 # 0.1.0                             ← если HEAD на теге v0.1.0
 ```
 
-Релизный workflow:
+Релизный workflow — **только через `prepare-release`**, теги руками не ставим:
 
 ```bash
-# 1. Зафиксировать изменения
-git commit -am "feat: новая фича"
+gh workflow run prepare-release --field version=0.2.0
+# или: Actions → prepare-release → Run workflow
+```
 
-# 2. Поставить тег на нужный коммит
-git tag v0.2.0
+`prepare-release` (`.github/workflows/prepare-release.yml`) валидирует версию (строгий semver без ведущих нулей), требует зелёного прогона CI на вершине `main`, проставляет версию в `.claude-plugin/plugin.json` и в маркер `<!-- yt-version: ... -->` в `.claude/skills/yt/SKILL.md`, вливает это в `main` через PR со squash-merge и только потом вешает тег `v0.2.0` на итоговый коммит.
 
-# 3. Собрать с этой версией
+Тег, поставленный руками в обход `prepare-release`, оставит `plugin.json` и маркер в SKILL.md на версии предыдущего релиза — то есть пин на этот тег отдал бы skill с чужой версией в маркере (это и была [issue #20](https://github.com/RoboNET/YandexTrackerCLI/issues/20)). Есть `dry_run`, чтобы посмотреть diff без коммита и тега.
+
+Проверить, что версия соберётся как ожидается, локально можно и без тега:
+
+```bash
 dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
   -c Release -r osx-arm64 --self-contained -o ./dist
-./dist/yt --version   # 0.2.0
-
-# 4. Запушить тег
-git push origin v0.2.0
+./dist/yt --version
 ```
 
 CI (`.github/workflows/build.yml`) собирает кросс-платформенные NativeAOT-бинари при пуше в `main` и при push'е тегов. Артефакты доступны во вкладке Actions.

@@ -2,45 +2,25 @@
 
 ## Скилл `yt`
 
-В репозитории есть [`.claude/skills/yt/SKILL.md`](.claude/skills/yt/SKILL.md) — это пользовательский руководящий документ по работе с CLI `yt`. Его автоматически подхватывает Claude Code и другие совместимые AI-инструменты.
+[`.claude/skills/yt/SKILL.md`](.claude/skills/yt/SKILL.md) — руководящий документ по работе с CLI `yt` для AI-ассистентов. Его автоматически подхватывает Claude Code в этом репозитории, и он же является **доставляемым артефактом**: пользователи получают именно этот файл из репозитория.
 
-Этот же файл встроен в бинарь как embedded resource (LogicalName `yt.skill.md`) и распространяется через команду `yt skill install`. Skill устанавливается в 5 AI-ассистентов:
+### Как он доставляется
 
-- **Claude** (`~/.claude/skills/yt/SKILL.md`) — полный SKILL.md as-is
-- **Codex** (`~/.agents/skills/yt/SKILL.md`) — полный SKILL.md as-is
-- **Gemini** (`~/.gemini/skills/yt/SKILL.md`) — полный SKILL.md as-is
-- **Cursor** (`~/.cursor/rules/yt.mdc`) — translated `.mdc` (frontmatter: `description` / `globs` / `alwaysApply`)
-- **Copilot** (`<projectDir>/.github/instructions/yt.instructions.md`) — translated `.instructions.md` (`applyTo: "**"`); **только project-scope**, global-scope для Copilot тихо пропускается
+- **Claude Code** — репозиторий одновременно плагин (`.claude-plugin/plugin.json`, поле `skills` указывает на `./.claude/skills/`) и источник плагинов (`.claude-plugin/marketplace.json`). Установка: `claude plugin marketplace add RoboNET/YandexTrackerCLI` + `claude plugin install yt@yandex-tracker-cli`.
+- **Остальные ассистенты** — универсальные установщики (`npx skills add RoboNET/YandexTrackerCLI`, `gh skill install RoboNET/YandexTrackerCLI`, нужен `gh` ≥ 2.90.0) сами раскладывают файл под каждого агента в его формате и по его пути. `~/.agents/skills/` по спецификации [Agent Skills](https://agentskills.io) — общая раскладка, которую читает часть агентов (Codex и следующие спецификации), но не все: Gemini CLI читает `~/.gemini/skills/`, Copilot — `<project>/.github/instructions/`.
+- **Вручную** — скопировать `.claude/skills/yt/SKILL.md` туда, где его читает ассистент.
 
-### Шпаргалка `yt skill`
+**В CLI установщика нет.** Команды `yt skill install/status/check/update/uninstall/show`, авто-проверка актуальности при каждом запуске `yt`, env `YT_SKILL_CHECK`, флаг `--no-skill-check` и embedded resource `yt.skill.md` удалены. Не восстанавливайте их: доставка и обновление skill'ов — задача менеджера плагинов и универсальных установщиков, дублировать её внутри бинаря дорого (маркер версии в сборке, состояние prompt'а, разбор чужих форматов) и бессмысленно. Раздел миграции для пользователей — в README.
 
-| Команда | Назначение |
-|---|---|
-| `yt skill install` (TTY, без флагов) | Интерактивный prompt: выбор ассистентов + scope + подтверждение перезаписи. По умолчанию предлагает «обнаруженные» (видит `~/.claude`, `~/.gemini`, …). |
-| `yt skill install --no-prompt` | Скрипт-режим: ставит во все 5 ассистентов (`--target all --scope global` — Claude+Codex+Gemini+Cursor; Copilot global → skipped). Используется в CI и при перенаправлении stdin/stdout. |
-| `yt skill install --target claude --scope project` | В `./.claude/skills/yt/SKILL.md` (явный target → prompt не запускается) |
-| `yt skill install --target gemini` | Только Gemini (`~/.gemini/skills/yt/SKILL.md`) |
-| `yt skill install --target cursor` | Только Cursor (`~/.cursor/rules/yt.mdc`) |
-| `yt skill install --target copilot --scope project` | Только Copilot (`<projectDir>/.github/instructions/yt.instructions.md`) |
-| `yt skill status` | Что установлено + version + `up_to_date` per location + `any_outdated` |
-| `yt skill update` | Перезаписать все уже установленные локации текущей версией CLI |
-| `yt skill check` | Ручная проверка устаревших skill (TTY → prompt; pipe → JSON warning) |
-| `yt skill check --no-prompt` | Только статус |
-| `yt skill check --reset-prompt-state` | Сбросить «больше не спрашивать» |
-| `yt skill uninstall` | Удалить |
-| `yt skill show --target claude\|codex\|gemini\|cursor\|copilot` | Напечатать содержимое (как было бы записано) |
+### Маркер версии
 
-Интерактивный режим `yt skill install` активируется когда:
+Сразу после YAML frontmatter в SKILL.md обязан стоять маркер `<!-- yt-version: X.Y.Z -->` с **реальной** версией. Проставляет его workflow `prepare-release` — одновременно с `version` в `plugin.json`, до создания тега (см. «Релизный workflow»). Плейсхолдера `{VERSION}` в маркере быть не должно: подставлять его в момент установки больше некому, потребитель маркетплейса получил бы литерал.
 
-- stdout/stdin не перенаправлены (TTY),
-- НЕ передан `--target` или `--scope`,
-- НЕ передан `--no-prompt`.
+Замена в `prepare-release` идёт по регулярке маркера (`perl -0pi -e`), а не по литералу: в маркере лежит версия предыдущего релиза, и искать её пришлось бы, откуда-то предварительно узнав. Регулярка ловит любое текущее содержимое маркера. Заменяется **только первое вхождение**, чтобы упоминания маркера в тексте скила (если появятся) не переписывались.
 
-Иначе используется default flow (`--target all --scope global`, или то что передано в флагах).
+Согласованность `plugin.json.version` с маркером и semver-форму самой версии проверяет `PluginManifestTests` — единственная машинная проверка доставляемого артефакта. Её реальная ценность — ручная правка: кто-то поднял версию в одном файле из двух, забыв про второй, либо вписал не-semver (`{VERSION}`, `dev`). Полустемпленное состояние от упавшего `prepare-release` до main доехать не может: обе правки делает один шаг, коммит — следующий. Держите тест зелёным.
 
-Auto-check срабатывает при каждом вызове `yt <команда>` (skip для `skill *`, `--version`, `--help`, `--no-skill-check`, `YT_SKILL_CHECK=0`). State хранится в `~/.cache/yandex-tracker/skill-prompt-state.json`.
-
-В SKILL.md обязательно должен быть маркер `<!-- yt-version: {VERSION} -->` сразу после YAML frontmatter — `EmbeddedSkill.ReadAll()` подменяет `{VERSION}` на актуальную сборочную версию из `AssemblyInformationalVersionAttribute` (MinVer). По этому маркеру `status`/`update`/auto-check определяют, актуален ли установленный файл.
+Между релизами `main` уходит вперёд маркера: правило «изменил публичный API — обнови SKILL.md» действует постоянно, а версия проставляется только в релизном коммите. Пользователям, которым нужна предсказуемость, README советует пинить установку на релизный тег (`ref` в записи маркетплейса).
 
 ### Правило обновления скилла
 
@@ -87,7 +67,27 @@ Auto-check срабатывает при каждом вызове `yt <кома
 1. Внести изменения, пройти тесты локально (`dotnet test`).
 2. Если затронут API — **обновить SKILL.md** (см. выше).
 3. Коммит, push в main → CI запускает только тесты.
-4. Когда готов релиз: `git tag vX.Y.Z` + `git push origin vX.Y.Z` → CI собирает 4 платформенных архива и публикует [GitHub Release](https://github.com/RoboNET/YandexTrackerCLI/releases) с SHA256SUMS.
+4. Когда готов релиз — запустить workflow **prepare-release** (`Actions → prepare-release → Run workflow`, либо `gh workflow run prepare-release --field version=X.Y.Z`). Руками теги больше не ставим.
+
+Что делает `prepare-release` (`.github/workflows/prepare-release.yml`):
+
+1. Валидирует версию (semver, опциональный pre-release суффикс: `0.6.0`, `0.6.0-rc.1`) и что тега `vX.Y.Z` ещё нет.
+2. Проставляет версию в `.claude-plugin/plugin.json` и в маркер `<!-- yt-version: ... -->` в `.claude/skills/yt/SKILL.md`.
+3. Вливает это в main через PR со squash-merge (main закрыт ruleset'ом, прямой push бота отклоняется) и дожидается merge.
+4. Ставит тег `vX.Y.Z` **на итоговый коммит main** — PAT'ом (`RELEASE_TOKEN`, fallback `HOMEBREW_TAP_TOKEN`), потому что тег, запушенный `GITHUB_TOKEN`, не запустил бы `build.yml`.
+5. `build.yml` на push тега: тесты на трёх ОС → 4 NativeAOT-архива → [GitHub Release](https://github.com/RoboNET/YandexTrackerCLI/releases) с SHA256SUMS → dispatch homebrew/scoop (для не-pre-release).
+
+Смысл порядка «версия до тега»: релизный тег несёт уже проставленные значения, поэтому любой путь доставки скила — плагином из marketplace, через `npx skills add` / `gh skill install` или ручным копированием — с пином на тег даёт одинаковое содержимое. Прежний job `sync-plugin-version` правил `plugin.json` **после** релиза, из-за чего тег всегда нёс версию предыдущего релиза; он удалён.
+
+Особенности:
+
+- **Pre-release** (`0.6.0-rc.1`) проходит тем же путём: версия проставляется в main. Значит между rc и стабильным релизом main честно объявляет pre-release-версию — это то, из чего rc и собран. `build.yml` помечает такой релиз `prerelease: true` и не дёргает homebrew/scoop.
+- **Перевыпуск тега, по которому есть релиз, не поддерживается** — workflow падает на проверке. Нужно поднять версию (или удалить тег и релиз руками, понимая, что артефакты уже могли осесть у пользователей). Висячий тег (релиза нет И сборка по нему не идёт) переставляется автоматически. Всё, что между — идущая сборка, неответивший API, — это отказ: снести тег живого релиза дороже, чем не выпустить релиз сейчас.
+- **Есть `dry_run`** — проставить и показать diff без коммита и тега.
+- CI на PR от бота не запускается (события `GITHUB_TOKEN` не триггерят workflow'ы), зато **merge PR идёт PAT'ом** — от него push в main запускает `build.yml`, и следующий релиз находит на вершине main зелёный прогон. Без этого проверка «зелёный CI на main» падала бы после каждого релиза, потому что вершиной был бы stamp-коммит бота. На случай, когда прогона всё же нет (релизы до этой правки), проверка умеет отступить на родителя stamp-коммита.
+- Ветка stamp-PR называется `chore/release-<версия>-<run_id>` — уникальность по прогону нужна, чтобы повторный запуск после сбоя между `git push` и merge не упирался в non-fast-forward.
+- Тег ложится только на тот SHA, на котором проверен CI: если `main` уехал за время прогона, workflow падает.
+- `.claude-plugin/marketplace.json` версию **не** дублирует: авторитет по версии плагина один — `plugin.json`. Если поле там появится, `prepare-release` упадёт с явным сообщением (и его надо будет научить проставлять версию и туда).
 
 ## Команды для разработки
 

@@ -9,8 +9,7 @@ using YandexTrackerCLI.Output;
 /// Table/Detail в TTY → <see cref="SpectreInteractiveUI"/>.
 /// </summary>
 /// <remarks>
-/// Тесты подменяют поведение через <see cref="TestOverride"/> (AsyncLocal), по тому
-/// же паттерну что <c>SkillInstallPrompt.TestOverride</c>.
+/// Тесты подменяют поведение через <see cref="TestOverride"/> (AsyncLocal).
 /// </remarks>
 public static class InteractiveUIResolver
 {

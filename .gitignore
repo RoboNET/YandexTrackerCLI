@@ -507,3 +507,7 @@ docs/superpowers/
 *.log
 yt-fed*.log
 yt-userme*.log
+
+# Рабочие деревья агентских сессий: каталог с чужими checkout'ами, одному `git add -A`
+# хватило бы, чтобы утащить их в репозиторий целиком.
+.claude/worktrees/

@@ -8,7 +8,40 @@ on:
     branches: [main]
 
 jobs:
+  # Синтаксис и типовые ошибки workflow'ов. Дёшево и ловит то, что иначе всплывает только
+  # в момент релиза: prepare-release запускается вручную и редко, ошибка в нём обнаружилась
+  # бы ровно тогда, когда её меньше всего хочется видеть.
+  #
+  # На push тега job пропускается намеренно: там правка workflow'а уже вмёрзла в тег, чинить
+  # нечего, а красный actionlint только заблокировал бы выпуск релиза. Гейтит он PR и push в
+  # main — то есть ровно те события, где почин стоит дёшево.
+  workflows-lint:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint (pinned + checksum)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          ARCHIVE="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$ARCHIVE" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ARCHIVE}"
+          echo "${ACTIONLINT_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar -xzf "$ARCHIVE" actionlint
+
+      - name: Lint workflows
+        run: ./actionlint -color
+
   test:
+    # Гейт, а не соседний job: иначе матрица тестов, публикация и релиз спокойно едут при
+    # красном actionlint. `always()` нужен потому, что на теге workflows-lint пропущен, а
+    # пропуск needs-джоба по умолчанию отменил бы и этот job вместе со всей публикацией.
+    needs: [workflows-lint]
+    if: ${{ always() && needs.workflows-lint.result != 'failure' && needs.workflows-lint.result != 'cancelled' }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,47 +179,6 @@ jobs:
             --ref main \
             --field version="$VERSION"
 
-  # Плагин-маркетплейсы Claude Code клонируют main, а не релизный тег, поэтому
-  # версия в .claude-plugin/plugin.json должна жить в main и совпадать с тегом.
-  # Main закрыт ruleset'ом (pull_request + linear history), прямой push бота
-  # отклоняется — поэтому изменение едет через PR с немедленным squash-merge
-  # (approvals не требуются, обязательных статус-чеков нет).
-  # ВНИМАНИЕ: события от GITHUB_TOKEN не триггерят workflow'ы (анти-рекурсия),
-  # поэтому CI на этом PR не запускается. Если в ruleset появятся обязательные
-  # статус-чеки, PR зависнет в ожидании чеков, которые никогда не стартуют, —
-  # тогда job нужно перевести на GitHub App token или PAT.
-  sync-plugin-version:
-    needs: release
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Sync .claude-plugin/plugin.json version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > plugin.json.tmp
-          mv plugin.json.tmp .claude-plugin/plugin.json
-          if git diff --quiet; then
-            echo "plugin.json уже содержит версию $VERSION"
-            exit 0
-          fi
-          BRANCH="chore/plugin-version-$VERSION"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
-          git add .claude-plugin/plugin.json
-          git commit -m "chore: sync plugin.json version to $VERSION"
-          git push origin "$BRANCH"
-          gh pr create --base main --head "$BRANCH" \
-            --title "chore: sync plugin.json version to $VERSION" \
-            --body "Автообновление версии плагина после релиза v$VERSION."
-          gh pr merge "$BRANCH" --squash --delete-branch \
-            || gh pr merge "$BRANCH" --squash --delete-branch --auto
+  # Версия в .claude-plugin/plugin.json и в маркере yt-version в SKILL.md проставляется
+  # ДО тега — workflow prepare-release.yml. Прежний job sync-plugin-version делал это
+  # ПОСЛЕ релиза, из-за чего тег всегда нёс версию предыдущего релиза (issue #20).

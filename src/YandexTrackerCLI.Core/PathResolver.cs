@@ -1,7 +1,7 @@
 namespace YandexTrackerCLI.Core;
 
 /// <summary>
-/// Path-resolution helpers shared by config, cache, and skill installers.
+/// Path-resolution helpers shared by config and cache.
 /// </summary>
 /// <remarks>
 /// Centralised here so the test harness can override the user-home location uniformly

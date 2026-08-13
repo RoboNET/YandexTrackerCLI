@@ -36,9 +36,11 @@ jobs:
           curl -sSfL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/SHA256SUMS" -o /tmp/sums
           cat /tmp/sums
 
-          echo "sha_osx_arm64=$(awk '/yt-osx-arm64\.tar\.gz/  {print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
-          echo "sha_linux_x64=$(awk '/yt-linux-x64\.tar\.gz/  {print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
-          echo "sha_linux_arm64=$(awk '/yt-linux-arm64\.tar\.gz/{print $1}' /tmp/sums)" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha_osx_arm64=$(awk '/yt-osx-arm64\.tar\.gz/  {print $1}' /tmp/sums)"
+            echo "sha_linux_x64=$(awk '/yt-linux-x64\.tar\.gz/  {print $1}' /tmp/sums)"
+            echo "sha_linux_arm64=$(awk '/yt-linux-arm64\.tar\.gz/{print $1}' /tmp/sums)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate Formula/yt.rb
         env:
