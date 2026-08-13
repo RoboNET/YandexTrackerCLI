@@ -18,6 +18,13 @@ public enum ErrorCode
     /// <c>allowed_queues</c>). Distinct from <see cref="Forbidden"/>, which reports a server-side denial.
     /// </summary>
     PolicyViolation,
+
+    /// <summary>
+    /// The command did not run to completion: it was interrupted (Ctrl-C / SIGINT / SIGTERM),
+    /// its HTTP timeout elapsed, or the host cancelled the invocation. The result is incomplete
+    /// by definition — never treat the output of a <see cref="Cancelled"/> run as a full answer.
+    /// </summary>
+    Cancelled,
 }
 
 public static class ErrorCodeExtensions
@@ -34,6 +41,7 @@ public static class ErrorCodeExtensions
         ErrorCode.NetworkError => 8,
         ErrorCode.ConfigError  => 9,
         ErrorCode.PolicyViolation => 10,
+        ErrorCode.Cancelled    => 11,
         _                      => 1,
     };
 
@@ -49,6 +57,7 @@ public static class ErrorCodeExtensions
         ErrorCode.NetworkError => "network_error",
         ErrorCode.ConfigError  => "config_error",
         ErrorCode.PolicyViolation => "policy_violation",
+        ErrorCode.Cancelled    => "cancelled",
         _                      => "unexpected",
     };
 }

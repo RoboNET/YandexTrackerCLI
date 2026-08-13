@@ -383,16 +383,9 @@ public static class TrackerContextFactory
                 baseUrl = new Uri(b);
             }
 
-            TimeSpan? timeout = null;
-            if (timeoutSeconds is { } ts)
-            {
-                timeout = TimeSpan.FromSeconds(ts);
-            }
-            else if (env.TryGetValue("YT_TIMEOUT", out var t)
-                     && int.TryParse(t, out var parsed))
-            {
-                timeout = TimeSpan.FromSeconds(parsed);
-            }
+            // Каскад --timeout → YT_TIMEOUT → дефолт живёт в TimeoutResolver: то же значение
+            // называет пользователю сообщение об отмене, и разойтись они не могут.
+            var timeout = TimeSpan.FromSeconds(TimeoutResolver.Resolve(timeoutSeconds, env));
 
             var http = TrackerHttpClientFactory.Create(
                 eff,

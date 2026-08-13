@@ -47,6 +47,27 @@ using Output;
 /// <see cref="ErrorCode.NetworkError"/> (exit 8): усечённые данные никогда
 /// не выдаются потребителю за успех.
 /// </para>
+/// <para>
+/// При записи в файл действует то же правило, и держится оно не уборкой после сбоя,
+/// а порядком операций: вложение пишется во временный файл
+/// <c>&lt;target&gt;.part-&lt;random&gt;</c> в каталоге цели и переезжает под целевое имя
+/// (<see cref="File.Move(string, string, bool)"/>) только после успешной проверки
+/// <c>Content-Length</c>. Поэтому файл под целевым именем всегда означает полностью
+/// скачанное вложение — в том числе после SIGKILL или отключения питания, когда никакой
+/// обработчик уже не сработает, — а <c>--force</c> уничтожает прежнее содержимое ровно
+/// в момент успеха, а не первым же полученным байтом. Оборванное скачивание (отмена,
+/// exit 11; ошибка I/O или тело короче <c>Content-Length</c>, exit 8) удаляет свой временный
+/// файл и пишет в stderr <c>removed incomplete download: &lt;tmp&gt;</c>.
+/// В режиме <c>--out -</c> удалять нечего: отданные в пайп байты уже у потребителя,
+/// и признаком неполноты служит exit-код.
+/// </para>
+/// <para>
+/// Схема требует права записи в каталог цели: если писать можно только в сам файл,
+/// команда падает с <see cref="ErrorCode.NetworkError"/> (exit 8), не тронув цель.
+/// Симлинк разыменовывается — обновляется файл по ссылке, а не подменяется ссылка.
+/// Специальные приёмники (<c>/dev/null</c>, <c>/dev/tty</c>, DOS-устройства вроде <c>NUL</c>)
+/// не переименовываются: в них пишем напрямую и ничего не удаляем.
+/// </para>
 /// </remarks>
 public static class AttachmentDownloadCommand
 {
@@ -122,7 +143,7 @@ public static class AttachmentDownloadCommand
 
                     if (pipeBroken)
                     {
-                        Console.Error.WriteLine(
+                        ErrorStream(pr).WriteLine(
                             $"downloaded {copied} bytes (truncated: consumer closed the pipe)");
                         return 0;
                     }
@@ -134,7 +155,7 @@ public static class AttachmentDownloadCommand
                             $"truncated download: expected {expected} bytes, got {copied}");
                     }
 
-                    Console.Error.WriteLine($"downloaded {copied} bytes");
+                    ErrorStream(pr).WriteLine($"downloaded {copied} bytes");
                     return 0;
                 }
 
@@ -168,13 +189,8 @@ public static class AttachmentDownloadCommand
                         $"file exists, use --force: {target}");
                 }
 
-                var mode = force ? FileMode.Create : FileMode.CreateNew;
-                long bytes;
-                await using (var fs = new FileStream(target, mode, FileAccess.Write, FileShare.None))
-                {
-                    await download.Stream.CopyToAsync(fs, ct);
-                    bytes = fs.Length;
-                }
+                var stderr = ErrorStream(pr);
+                var bytes = await WriteToFile(download, target, force, stderr, ct);
 
                 using var ms = new MemoryStream();
                 using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
@@ -190,11 +206,302 @@ public static class AttachmentDownloadCommand
             }
             catch (TrackerException ex)
             {
-                ErrorWriter.Write(Console.Error, ex);
+                ErrorWriter.Write(ErrorStream(pr), ex);
                 return ex.Code.ToExitCode();
             }
         });
         return cmd;
+    }
+
+    /// <summary>
+    /// Возвращает writer stderr, сконфигурированный для этого вызова.
+    /// </summary>
+    /// <param name="pr">Результат разбора аргументов.</param>
+    /// <returns>Writer stderr вызова либо <see cref="Console.Error"/>, если конфигурации нет.</returns>
+    /// <remarks>
+    /// Пояснительные строки команды обязаны идти туда же, куда идёт её JSON-ошибка, —
+    /// иначе in-process вызов (тесты, встраивание) получает половину вывода мимо своих
+    /// writer'ов, в настоящий stderr процесса.
+    /// </remarks>
+    private static TextWriter ErrorStream(ParseResult pr) => pr.InvocationConfiguration.Error;
+
+    /// <summary>
+    /// Скачивает вложение в файл через временный файл рядом с целью и атомарное переименование.
+    /// </summary>
+    /// <param name="download">Открытый ответ с телом вложения.</param>
+    /// <param name="target">Целевой путь.</param>
+    /// <param name="force">Разрешено ли перезаписать существующий файл.</param>
+    /// <param name="stderr">Writer для пояснительных строк.</param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Количество записанных байт.</returns>
+    /// <exception cref="TrackerException">
+    /// <see cref="ErrorCode.NetworkError"/> — тело короче <c>Content-Length</c> либо локальная
+    /// ошибка записи; <see cref="ErrorCode.InvalidArgs"/> — целевой файл появился между
+    /// проверкой и переименованием, а <c>--force</c> не задан.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// Инвариант «файл под целевым именем = полностью скачанное вложение» держится не уборкой
+    /// после сбоя, а тем, что до успешной проверки размера целевого имени вообще не существует.
+    /// Это верно и при жёстком убийстве процесса (SIGKILL, отключение питания), когда никакой
+    /// обработчик сигналов уже не поможет, и оставляет прежнее содержимое файла нетронутым при
+    /// <c>--force</c>: оно уничтожается ровно в момент успешного переименования.
+    /// </para>
+    /// <para>
+    /// Временный файл создаётся в каталоге цели — иначе переименование перестало бы быть
+    /// атомарным (переезд между файловыми системами) и превратилось бы в копирование.
+    /// Плата за это — потребность в праве записи на каталог: при записи в каталог, где менять
+    /// можно только сам файл, скачивание теперь падает с <see cref="ErrorCode.NetworkError"/>
+    /// вместо частичной перезаписи.
+    /// </para>
+    /// <para>
+    /// Симлинк разыменовывается до записи, чтобы, как и прежде, обновлялся файл по ссылке,
+    /// а не подменялась сама ссылка. Специальные приёмники (<c>/dev/null</c>, <c>/dev/tty</c>,
+    /// именованные каналы под <c>/dev</c>, DOS-устройства вроде <c>NUL</c>) переименованием
+    /// заменять нельзя — под root это уничтожило бы устройство, — поэтому в них пишем напрямую
+    /// и ничего не удаляем; признаком неполноты, как и для <c>--out -</c>, служит exit-код.
+    /// </para>
+    /// </remarks>
+    private static async Task<long> WriteToFile(
+        Core.Api.TrackerDownload download,
+        string target,
+        bool force,
+        TextWriter stderr,
+        CancellationToken ct)
+    {
+        var writePath = ResolveWritePath(target);
+
+        if (IsSpecialSink(writePath))
+        {
+            long written;
+            await using (var sink = OpenForWrite(writePath, FileMode.Create, target))
+            {
+                written = await CopyCounting(download.Stream, sink, ct);
+            }
+
+            EnsureComplete(download, written);
+            return written;
+        }
+
+        var tmp = writePath + ".part-" + Guid.NewGuid().ToString("N")[..8];
+        var stream = OpenForWrite(tmp, FileMode.CreateNew, target);
+
+        long bytes;
+        try
+        {
+            await using (stream)
+            {
+                await download.Stream.CopyToAsync(stream, ct);
+                bytes = stream.Length;
+            }
+
+            EnsureComplete(download, bytes);
+            Commit(tmp, writePath, target, force);
+        }
+        catch
+        {
+            // Отмена (Ctrl-C, таймаут) или ошибка I/O посреди скачивания: удаляем заведомо
+            // свой временный файл. Целевого файла к этому моменту либо нет, либо он не тронут.
+            RemoveTemp(tmp, stderr);
+            throw;
+        }
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// Открывает файл на запись, переводя локальные ошибки I/O в контракт ошибок CLI.
+    /// </summary>
+    /// <param name="path">Открываемый путь (временный файл или специальный приёмник).</param>
+    /// <param name="mode">Режим открытия.</param>
+    /// <param name="target">Целевой путь — для текста ошибки.</param>
+    /// <returns>Открытый поток.</returns>
+    /// <exception cref="TrackerException"><see cref="ErrorCode.NetworkError"/> — открыть не удалось.</exception>
+    private static FileStream OpenForWrite(string path, FileMode mode, string target)
+    {
+        try
+        {
+            return new FileStream(path, mode, FileAccess.Write, FileShare.None);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                       or NotSupportedException or ArgumentException)
+        {
+            throw new TrackerException(
+                ErrorCode.NetworkError,
+                $"could not open \"{path}\" for writing: {ex.Message} (target: {target})",
+                inner: ex);
+        }
+    }
+
+    /// <summary>
+    /// Проверяет, что получено не меньше объявленного в <c>Content-Length</c>.
+    /// </summary>
+    /// <param name="download">Ответ с телом вложения.</param>
+    /// <param name="written">Сколько байт записано.</param>
+    /// <exception cref="TrackerException"><see cref="ErrorCode.NetworkError"/> — тело короче объявленного.</exception>
+    private static void EnsureComplete(Core.Api.TrackerDownload download, long written)
+    {
+        if (download.ContentLength is { } expected && written < expected)
+        {
+            throw new TrackerException(
+                ErrorCode.NetworkError,
+                $"truncated download: expected {expected} bytes, got {written}");
+        }
+    }
+
+    /// <summary>
+    /// Переименовывает временный файл в целевой.
+    /// </summary>
+    /// <param name="tmp">Временный файл с полностью скачанным содержимым.</param>
+    /// <param name="writePath">Путь записи (цель с разыменованными симлинками).</param>
+    /// <param name="target">Целевой путь как его задал пользователь — для текста ошибки.</param>
+    /// <param name="force">Разрешено ли перезаписывать.</param>
+    /// <exception cref="TrackerException">
+    /// <see cref="ErrorCode.InvalidArgs"/> — файл появился между проверкой и переименованием
+    /// (гонка с другим процессом), <c>--force</c> не задан; <see cref="ErrorCode.NetworkError"/> —
+    /// прочая ошибка переименования.
+    /// </exception>
+    private static void Commit(string tmp, string writePath, string target, bool force)
+    {
+        try
+        {
+            File.Move(tmp, writePath, overwrite: force);
+        }
+        catch (IOException ex) when (!force && File.Exists(writePath))
+        {
+            // Файла не было при проверке, но он появился до переименования. Молча затирать
+            // чужой результат нельзя — это ровно тот случай, от которого защищает --force.
+            throw new TrackerException(
+                ErrorCode.InvalidArgs,
+                $"file exists, use --force: {target}",
+                inner: ex);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new TrackerException(
+                ErrorCode.NetworkError,
+                $"could not finalize download into \"{target}\": {ex.Message}",
+                inner: ex);
+        }
+    }
+
+    /// <summary>
+    /// Удаляет временный файл и сообщает об этом в stderr, чтобы удаление не выглядело
+    /// как пропавший результат.
+    /// </summary>
+    /// <param name="tmp">Путь к временному файлу.</param>
+    /// <param name="stderr">Writer для сообщения.</param>
+    /// <remarks>
+    /// Ошибку самого удаления подавляем: наверх должна уйти исходная причина обрыва,
+    /// а не вторичный сбой уборки. В этом случае в stderr остаётся предупреждение о том,
+    /// что временный файл остался на диске.
+    /// </remarks>
+    private static void RemoveTemp(string tmp, TextWriter stderr)
+    {
+        try
+        {
+            if (File.Exists(tmp))
+            {
+                File.Delete(tmp);
+                stderr.WriteLine($"removed incomplete download: {tmp}");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            stderr.WriteLine(
+                $"WARNING: incomplete download left on disk (could not remove it: {ex.Message}): {tmp}");
+        }
+    }
+
+    /// <summary>
+    /// Разыменовывает симлинк в целевом пути, чтобы запись обновляла файл по ссылке,
+    /// а не подменяла саму ссылку.
+    /// </summary>
+    /// <param name="target">Целевой путь.</param>
+    /// <returns>Путь, по которому следует писать.</returns>
+    private static string ResolveWritePath(string target)
+    {
+        try
+        {
+            return File.ResolveLinkTarget(target, returnFinalTarget: true)?.FullName ?? target;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Битая или зацикленная ссылка: пишем по исходному пути, как и раньше.
+            return target;
+        }
+    }
+
+    /// <summary>
+    /// Определяет, что путь указывает на специальный приёмник, который нельзя подменять
+    /// переименованием (устройство, канал, консоль).
+    /// </summary>
+    /// <param name="path">Проверяемый путь.</param>
+    /// <returns><see langword="true"/> для устройств и псевдофайловых систем.</returns>
+    /// <remarks>
+    /// Портируемого способа спросить у .NET тип файла (st_mode) нет: <c>File.GetAttributes</c>
+    /// на Unix различает только каталог и симлинк. Поэтому проверка идёт по расположению —
+    /// всё под <c>/dev</c> и <c>/proc</c> и зарезервированные DOS-имена на Windows.
+    /// Ошибиться в эту сторону безопасно: для такого пути мы просто ведём себя как раньше.
+    /// </remarks>
+    private static bool IsSpecialSink(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (path.StartsWith(@"\\.\", StringComparison.Ordinal)
+                || path.StartsWith(@"\\?\", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            var name = Path.GetFileNameWithoutExtension(path);
+            return DosDevices.Contains(name);
+        }
+
+        var full = Path.GetFullPath(path);
+        return full.StartsWith("/dev/", StringComparison.Ordinal)
+            || full.StartsWith("/proc/", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Зарезервированные имена устройств Windows, запись в которые не является записью в файл.
+    /// </summary>
+    private static readonly HashSet<string> DosDevices = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NUL", "CON", "AUX", "PRN",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    /// <summary>
+    /// Копирует поток, считая записанные байты: у специальных приёмников
+    /// (<c>/dev/null</c> и прочих устройств) спрашивать <see cref="FileStream.Length"/> нельзя.
+    /// </summary>
+    /// <param name="source">Источник.</param>
+    /// <param name="destination">Приёмник.</param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Количество записанных байт.</returns>
+    private static async Task<long> CopyCounting(Stream source, Stream destination, CancellationToken ct)
+    {
+        const int chunkSize = 81920;
+        var buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
+        long total = 0;
+        try
+        {
+            int read;
+            while ((read = await source.ReadAsync(buffer.AsMemory(0, chunkSize), ct)) > 0)
+            {
+                await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                total += read;
+            }
+
+            await destination.FlushAsync(ct);
+            return total;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     /// <summary>

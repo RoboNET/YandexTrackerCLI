@@ -16,6 +16,7 @@ public sealed class ErrorCodeTests
     [Arguments(ErrorCode.NetworkError, 8)]
     [Arguments(ErrorCode.ConfigError, 9)]
     [Arguments(ErrorCode.PolicyViolation, 10)]
+    [Arguments(ErrorCode.Cancelled, 11)]
     [Arguments(ErrorCode.Unexpected, 1)]
     public async Task ToExitCode_ReturnsDeterministicMapping(ErrorCode code, int expected)
     {
@@ -33,6 +34,7 @@ public sealed class ErrorCodeTests
     [Arguments(ErrorCode.NetworkError, "network_error")]
     [Arguments(ErrorCode.ConfigError,  "config_error")]
     [Arguments(ErrorCode.PolicyViolation, "policy_violation")]
+    [Arguments(ErrorCode.Cancelled,    "cancelled")]
     [Arguments(ErrorCode.Unexpected,   "unexpected")]
     public async Task ToWireName_StableStringMapping(ErrorCode code, string expected)
     {

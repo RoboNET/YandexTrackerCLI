@@ -131,8 +131,23 @@ internal sealed class TestEnv : IDisposable
     /// <param name="args">Аргументы командной строки.</param>
     /// <param name="stdout">Writer для stdout.</param>
     /// <param name="stderr">Writer для stderr.</param>
+    /// <param name="ct">Токен отмены вызова — как если бы отмену запросил хост.</param>
+    /// <param name="gracePeriod">Grace-период после сигнала; <c>null</c> — продовый дефолт.</param>
+    /// <param name="onWatchReady">Хук на обработчик сигналов — чтобы тест мог подать сигнал,
+    /// не посылая процессу настоящий SIGINT.</param>
     /// <returns>Exit-code команды.</returns>
-    public async Task<int> Invoke(string[] args, TextWriter stdout, TextWriter stderr)
+    /// <remarks>
+    /// Идёт через <see cref="CliRunner.Run(string[], InvocationConfiguration?, CancellationToken, TimeSpan?)"/>,
+    /// а не напрямую через <c>Parse(args).InvokeAsync(cfg)</c>: верхнеуровневая обработка ошибок
+    /// и отмены живёт именно там, и тесты должны проверять тот же путь, что и <c>Program.cs</c>.
+    /// </remarks>
+    public async Task<int> Invoke(
+        string[] args,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken ct = default,
+        TimeSpan? gracePeriod = null,
+        Action<InterruptWatch>? onWatchReady = null)
     {
         var prevOut = Console.Out;
         var prevErr = Console.Error;
@@ -141,10 +156,9 @@ internal sealed class TestEnv : IDisposable
         Console.SetError(stderr);
         try
         {
-            var root = RootCommandBuilder.Build();
             var cfg = new InvocationConfiguration { Output = stdout, Error = stderr };
             ConfigureCli?.Invoke(cfg);
-            return await root.Parse(args).InvokeAsync(cfg);
+            return await CliRunner.Run(args, cfg, ct, gracePeriod, onWatchReady);
         }
         finally
         {
