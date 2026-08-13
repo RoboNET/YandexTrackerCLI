@@ -1,0 +1,26 @@
+{
+  "name": "yandex-tracker-cli",
+  "owner": {
+    "name": "Mikhail Korolev",
+    "url": "https://github.com/RoboNET"
+  },
+  "description": "Источник плагина yt — skill для работы с Яндекс Трекером через CLI yt.",
+  "plugins": [
+    {
+      "name": "yt",
+      "source": "./",
+      "description": "Yandex Tracker CLI — работа с Яндекс Трекером (issues, комментарии, worklogs, доски, спринты) через yt. Скил версионируется вместе с CLI.",
+      "homepage": "https://github.com/RoboNET/YandexTrackerCLI",
+      "repository": "https://github.com/RoboNET/YandexTrackerCLI",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "yandex-tracker",
+        "tracker",
+        "issues",
+        "cli",
+        "dotnet"
+      ]
+    }
+  ]
+}

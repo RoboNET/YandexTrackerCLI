@@ -53,15 +53,12 @@ internal sealed class TestEnv : IDisposable
         // onto the developer's real filesystem during tests.
         Set("XDG_CONFIG_HOME", Path.Combine(_dir, "xdg-config"));
         Set("XDG_CACHE_HOME", Path.Combine(_dir, "xdg-cache"));
-        // HOME / USERPROFILE — для тестов skill-команд (Claude global = ~/.claude/...,
-        // Codex global = ~/.codex/...). На .NET Environment.SpecialFolder.UserProfile
+        // HOME / USERPROFILE — чтобы разворачивание `~` в путях (wire-log, кэш) не уводило
+        // тесты в реальный домашний каталог. На .NET Environment.SpecialFolder.UserProfile
         // на Unix читает HOME, на Windows — USERPROFILE.
         Set("HOME", Path.Combine(_dir, "home"));
         Set("USERPROFILE", Path.Combine(_dir, "home"));
         Directory.CreateDirectory(Path.Combine(_dir, "home"));
-        // Disable skill auto-check by default — тесты должны быть детерминистичными,
-        // не должны спрашивать про обновление skill'а в Console.ReadLine.
-        Set("YT_SKILL_CHECK", "0");
     }
 
     /// <summary>
@@ -181,8 +178,6 @@ internal sealed class TestEnv : IDisposable
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestTokenReader.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestFederatedHttpClient.Value = null;
         YandexTrackerCLI.Commands.Attachment.AttachmentDownloadCommand.TestStdoutOverride.Value = null;
-        YandexTrackerCLI.Skill.SkillInstallPrompt.TestOverride.Value = null;
-        YandexTrackerCLI.Skill.SkillInstallCommandHelpers.TestForceInteractive.Value = null;
 
         try
         {
