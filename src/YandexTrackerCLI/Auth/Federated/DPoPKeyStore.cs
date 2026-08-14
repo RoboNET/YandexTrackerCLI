@@ -80,11 +80,19 @@ public sealed class DPoPKeyStore
                 Directory.CreateDirectory(dir);
             }
 
-            File.WriteAllText(_path, export);
+            // Запись через временный файл и переименование, как в ConfigStore и TokenCache.
+            // Обрыв процесса посреди прямой записи оставил бы усечённый PEM: ключ невосстановим,
+            // а федеративный профиль после этого не оживает без повторного логина. Заодно
+            // права 0600 выставляются ДО того, как ключ появляется под своим именем, — иначе
+            // между записью и chmod существует окно, в котором приватный ключ читаем всем.
+            var tmp = _path + ".tmp";
+            File.WriteAllText(tmp, export);
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                File.SetUnixFileMode(_path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
+
+            File.Move(tmp, _path, overwrite: true);
 
             return newKey;
         }
