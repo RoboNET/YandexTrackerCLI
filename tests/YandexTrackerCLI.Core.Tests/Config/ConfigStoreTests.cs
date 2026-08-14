@@ -120,9 +120,17 @@ public sealed class ConfigStoreTests
 
     /// <summary>
     /// Одновременные записи не должны делить временный файл: фиксированное имя
-    /// <c>config.json.tmp</c> означало бы, что вторая запись усекает наполовину записанную
-    /// первую, а на диске остаётся обрезанный файл с креденшелами всех профилей.
+    /// <c>config.json.tmp</c> означало бы, что писатели топчут промежуточное состояние
+    /// друг друга, а на диске остаётся обрезанный файл с креденшелами всех профилей.
     /// </summary>
+    /// <remarks>
+    /// <c>SaveAsync</c> идёт без лока, поэтому «все шестнадцать записей удались» здесь не
+    /// гарантируется и в проде: на Windows замена целевого файла отказывает, пока его
+    /// заменяет другой писатель, и ограниченный повтор снимает лишь часть таких отказов.
+    /// Гарантируется другое: отдельный отказ выходит структурным <c>config_error</c>,
+    /// хотя бы одна запись доходит до диска, итоговый файл читается целиком и согласован,
+    /// временных файлов не остаётся.
+    /// </remarks>
     [Test]
     public async Task SaveAsync_ConcurrentWrites_NeverProduceTruncatedFile()
     {
@@ -134,15 +142,34 @@ public sealed class ConfigStoreTests
             marker,
             Enumerable.Range(0, 200).ToDictionary(i => $"p{i}", i => Oauth($"{marker}-{i}")));
 
-        var tasks = Enumerable.Range(0, 16)
-            .Select(i => Task.Run(() => new ConfigStore(path).SaveAsync(Big($"m{i}"))));
-        await Task.WhenAll(tasks);
+        var tasks = Enumerable.Range(0, 16).Select(i => Task.Run(async () =>
+        {
+            try
+            {
+                await new ConfigStore(path).SaveAsync(Big($"m{i}"));
+                return true;
+            }
+            catch (TrackerException ex) when (ex.Code == ErrorCode.ConfigError)
+            {
+                // Конкурентная запись вправе отказать — но только предъявив структурную ошибку.
+                return false;
+            }
+        }));
+        var succeeded = await Task.WhenAll(tasks);
+
+        // Хотя бы одна запись обязана дойти до диска.
+        await Assert.That(succeeded.Any(ok => ok)).IsTrue();
 
         // Файл читается целиком и остаётся валидным JSON — усечения не случилось.
         var cfg = await new ConfigStore(path).LoadAsync();
         await Assert.That(cfg.Profiles).Count().IsEqualTo(200);
+
+        // Содержимое принадлежит ровно одному писателю: маркер согласован по всем профилям.
         var marker = cfg.DefaultProfile;
-        await Assert.That(cfg.Profiles["p199"].Auth.Token).IsEqualTo($"{marker}-199");
+        for (var i = 0; i < 200; i++)
+        {
+            await Assert.That(cfg.Profiles[$"p{i}"].Auth.Token).IsEqualTo($"{marker}-{i}");
+        }
 
         // Временные файлы за собой не оставляем.
         await Assert.That(Directory.GetFiles(dir, "*.tmp")).IsEmpty();

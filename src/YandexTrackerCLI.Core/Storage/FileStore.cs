@@ -17,6 +17,38 @@ internal static class FileStore
     private static readonly TimeSpan LockPollInterval = TimeSpan.FromMilliseconds(25);
 
     /// <summary>
+    /// Паузы между повторами завершающего переименования. Длина массива задаёт число
+    /// повторов, сумма — верхнюю границу задержки (около 150 мс).
+    /// </summary>
+    /// <remarks>
+    /// Доли секунды, а не секунды: это горячий путь любой команды, меняющей конфиг, и
+    /// ждать здесь дольше означает подвесить CLI на отказе, который повтором не лечится.
+    /// </remarks>
+    private static readonly TimeSpan[] RenameRetryDelays =
+    [
+        TimeSpan.FromMilliseconds(10),
+        TimeSpan.FromMilliseconds(20),
+        TimeSpan.FromMilliseconds(40),
+        TimeSpan.FromMilliseconds(80),
+    ];
+
+    /// <summary>
+    /// Нужен ли повтор завершающего переименования на текущей платформе.
+    /// </summary>
+    /// <remarks>
+    /// Только Windows: там замена целевого файла — не атомарная подстановка имени, а
+    /// операция над самим целевым файлом, и она отказывает, пока файл кем-то открыт без
+    /// разрешения на удаление (антивирус, индексатор, редактор, чужой процесс) или пока
+    /// его прямо сейчас заменяет другой писатель. На POSIX <c>rename(2)</c> атомарен и
+    /// такой гонки не имеет, поэтому там повтор только оттягивал бы честную ошибку.
+    /// </remarks>
+    private static readonly bool RenameNeedsRetry = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    private const int HResultAccessDenied = unchecked((int)0x80070005);
+    private const int HResultSharingViolation = unchecked((int)0x80070020);
+    private const int HResultLockViolation = unchecked((int)0x80070021);
+
+    /// <summary>
     /// Берёт эксклюзивный лок на отдельном файле <paramref name="lockPath"/>, повторяя
     /// попытки до истечения <paramref name="timeout"/>.
     /// </summary>
@@ -151,6 +183,12 @@ internal static class FileStore
     /// на него начинает указывать имя; авария сразу после <see cref="File.Move(string, string, bool)"/>
     /// может потерять переименование, и на месте останется прежний валидный файл.
     /// </para>
+    /// <para>
+    /// На Windows завершающее переименование повторяется ограниченное число раз (см.
+    /// <see cref="CommitWithRetry"/>): там замена целевого файла отказывает, пока файл
+    /// кем-то открыт или пока его заменяет другой писатель. Исчерпав попытки, метод ведёт
+    /// себя как прежде — <see cref="ErrorCode.ConfigError"/> с исходным исключением внутри.
+    /// </para>
     /// </remarks>
     public static async Task WriteAtomic(string path, Func<Stream, CancellationToken, Task> write, CancellationToken ct)
     {
@@ -175,7 +213,10 @@ internal static class FileStore
                 File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
 
-            File.Move(tmp, path, overwrite: true);
+            // Повторяется только переименование: временный файл уже записан и сброшен на
+            // диск, переписывать его на каждой попытке незачем.
+            var source = tmp;
+            await CommitWithRetry(() => File.Move(source, path, overwrite: true), RenameNeedsRetry, ct);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -202,6 +243,59 @@ internal static class FileStore
             throw;
         }
     }
+
+    /// <summary>
+    /// Выполняет завершающий коммит записи, повторяя его при преходящем отказе Windows.
+    /// </summary>
+    /// <param name="commit">Само переименование временного файла поверх целевого.</param>
+    /// <param name="retryTransientFailures">
+    /// <c>true</c> — повторять преходящие отказы (Windows); <c>false</c> — отдавать первый
+    /// же отказ наружу (POSIX, где <c>rename(2)</c> атомарен).
+    /// </param>
+    /// <param name="ct">Токен отмены.</param>
+    /// <returns>Задача, завершающаяся после успешного коммита.</returns>
+    /// <remarks>
+    /// Вынесено отдельным методом, чтобы логика повтора проверялась тестом на любой
+    /// платформе: платформа решает только <paramref name="retryTransientFailures"/>.
+    /// Исчерпав попытки, метод выпускает последнее исключение — вызывающий код обернёт его
+    /// в <see cref="ErrorCode.ConfigError"/> ровно как раньше.
+    /// </remarks>
+    internal static async Task CommitWithRetry(Action commit, bool retryTransientFailures, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                commit();
+                return;
+            }
+            catch (Exception ex) when (retryTransientFailures
+                                       && attempt < RenameRetryDelays.Length
+                                       && IsTransientCommitFailure(ex))
+            {
+                await Task.Delay(RenameRetryDelays[attempt], ct);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Отличает преходящий отказ замены целевого файла от отказа, который повтор не лечит.
+    /// </summary>
+    /// <param name="ex">Исключение, полученное при переименовании.</param>
+    /// <returns><c>true</c>, если попытку имеет смысл повторить.</returns>
+    /// <remarks>
+    /// Windows отдаёт «файл кем-то открыт» и как <see cref="UnauthorizedAccessException"/>,
+    /// и как <see cref="IOException"/> с кодом нарушения совместного доступа. Отсутствие
+    /// каталога, отсутствие файла и слишком длинный путь — тоже <see cref="IOException"/>,
+    /// но повтором они не лечатся, поэтому исключены явно.
+    /// </remarks>
+    private static bool IsTransientCommitFailure(Exception ex) => ex switch
+    {
+        UnauthorizedAccessException => true,
+        DirectoryNotFoundException or FileNotFoundException or PathTooLongException => false,
+        IOException io => io.HResult is HResultAccessDenied or HResultSharingViolation or HResultLockViolation,
+        _ => false,
+    };
 
     /// <summary>
     /// Открывает файл на чтение так, чтобы конкурентная запись другого процесса не падала.
