@@ -9,7 +9,8 @@ using Config;
 /// with the policy off the process may not <i>explicitly</i> initiate mail-outs and
 /// integrations — it may neither summon people (<c>summonees</c>,
 /// <c>maillistSummonees</c> anywhere in the JSON body) nor mutate queue automations
-/// (<c>triggers</c>, <c>autoactions</c> in the path). Reading stays unrestricted.
+/// (<c>queues/{KEY}/triggers</c>, <c>.../autoactions</c>, <c>.../macros</c> — the whole
+/// <c>yt automation</c> group). Reading stays unrestricted.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,12 +32,14 @@ using Config;
 /// <para>Decision table with the policy off:</para>
 /// <list type="bullet">
 ///   <item><description>GET/HEAD/OPTIONS — always pass through, including reads of
-///   <c>triggers</c>/<c>autoactions</c>: the policy restricts writes only.</description></item>
+///   <c>triggers</c>/<c>autoactions</c>/<c>macros</c>: the policy restricts writes only.</description></item>
 ///   <item><description><c>POST .../_search</c> — passes through: semantically a read
 ///   (the same exemption <see cref="ReadOnlyGuardHandler"/> makes).</description></item>
-///   <item><description>POST/PUT/PATCH/DELETE on a path with a <c>triggers</c> or
-///   <c>autoactions</c> segment (percent-decoded, compared case-insensitively) —
-///   denied.</description></item>
+///   <item><description>POST/PUT/PATCH/DELETE on <c>queues/{KEY}/{triggers|autoactions|macros}</c>
+///   (percent-decoded, compared case-insensitively, matched positionally so that a queue whose
+///   key happens to be <c>TRIGGERS</c> is not affected) — denied.</description></item>
+///   <item><description>A mutating request with no URI at all — denied: an unverifiable
+///   request is not a safe one.</description></item>
 ///   <item><description>Any mutating request whose JSON body carries <c>summonees</c> or
 ///   <c>maillistSummonees</c> at any depth — denied, wherever the field sits (a comment, a
 ///   nested comment inside a transition, a <c>bulkchange</c> payload).</description></item>
@@ -88,21 +91,29 @@ public sealed class ExternalEffectsGuardHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Rejects mutations of queue automations (<c>triggers</c>, <c>autoactions</c>).
+    /// Rejects mutations of queue automations
+    /// (<c>queues/{KEY}/{triggers|autoactions|macros}</c>).
     /// </summary>
     /// <param name="request">The outgoing request.</param>
     /// <exception cref="TrackerException">
-    /// <see cref="ErrorCode.PolicyViolation"/> when the path addresses an automation resource.
+    /// <see cref="ErrorCode.PolicyViolation"/> when the path addresses an automation resource,
+    /// or when the request carries no URI to check.
     /// </exception>
     private void EnsureNoAutomationMutation(HttpRequestMessage request)
     {
         if (request.RequestUri is null)
         {
-            return;
+            // Мутирующий запрос без URI проверить нельзя, а «не знаю» в барьере обязано
+            // означать отказ, а не пропуск: то же решение принимает
+            // AllowedWriteIssuesGuardHandler, когда из пути не извлекается ни один ключ.
+            throw new TrackerException(
+                ErrorCode.PolicyViolation,
+                $"mutating {request.Method.Method} request carries no URI, so it cannot be "
+                + $"verified against external_effects of profile '{_profileName}'");
         }
 
         var (path, _) = RequestUriPath.Split(request.RequestUri);
-        var decoded = RequestUriPath.Segments(path).Select(RequestUriPath.Decode);
+        var decoded = Array.ConvertAll(RequestUriPath.Segments(path), RequestUriPath.Decode);
 
         var segment = ExternalEffectsPolicy.FindAutomationSegment(decoded);
         if (segment is not null)

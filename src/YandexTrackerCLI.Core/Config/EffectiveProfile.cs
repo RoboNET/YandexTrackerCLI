@@ -8,6 +8,15 @@ namespace YandexTrackerCLI.Core.Config;
 /// <param name="OrgId">Идентификатор организации.</param>
 /// <param name="ReadOnly">Действующая read-only политика.</param>
 /// <param name="Auth">Действующая конфигурация аутентификации.</param>
+/// <param name="ExternalEffectsAllowed">
+/// Действующая политика <c>external_effects</c>: <c>true</c> — внешние эффекты разрешены.
+/// Разрешены тогда и только тогда, когда их не запретил ни профиль
+/// (<see cref="Profile.ExternalEffects"/> = <c>false</c>), ни окружение
+/// (<c>YT_EXTERNAL_EFFECTS=0</c>). Окружение может ограничение только включить.
+/// Параметр намеренно обязательный и стоит до необязательных: значение по умолчанию
+/// здесь означало бы «внешние эффекты разрешены», и любая будущая позиционная
+/// конструкция, не дошедшая до этого параметра, молча снимала бы политику.
+/// </param>
 /// <param name="DefaultFormat">Формат вывода по умолчанию из профиля, если задан.</param>
 /// <param name="AllowedQueues">
 /// Действующий список разрешённых очередей. <c>null</c> или пустой список означают
@@ -23,20 +32,14 @@ namespace YandexTrackerCLI.Core.Config;
 /// (профиль ограничения не нёс) или из их пересечения. Окружение может область записи
 /// только сузить, поэтому третий случай — всегда подмножество списка профиля.
 /// </param>
-/// <param name="ExternalEffectsAllowed">
-/// Действующая политика <c>external_effects</c>: <c>true</c> — внешние эффекты разрешены.
-/// Разрешены тогда и только тогда, когда их не запретил ни профиль
-/// (<see cref="Profile.ExternalEffects"/> = <c>false</c>), ни окружение
-/// (<c>YT_EXTERNAL_EFFECTS=0</c>). Окружение может ограничение только включить.
-/// </param>
 public sealed record EffectiveProfile(
     string Name,
     OrgType OrgType,
     string OrgId,
     bool ReadOnly,
     AuthConfig Auth,
+    bool ExternalEffectsAllowed,
     string? DefaultFormat = null,
     IReadOnlyList<string>? AllowedQueues = null,
     IReadOnlyList<string>? AllowedWriteIssues = null,
-    WriteIssuesSource AllowedWriteIssuesSource = WriteIssuesSource.Profile,
-    bool ExternalEffectsAllowed = true);
+    WriteIssuesSource AllowedWriteIssuesSource = WriteIssuesSource.Profile);

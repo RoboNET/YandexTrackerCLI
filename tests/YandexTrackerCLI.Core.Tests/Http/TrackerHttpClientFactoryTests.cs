@@ -18,7 +18,8 @@ public sealed class TrackerHttpClientFactoryTests
             OrgType: OrgType.Cloud,
             OrgId: "org-1",
             ReadOnly: false,
-            Auth: new AuthConfig(AuthType.OAuth, Token: "y0"));
+            Auth: new AuthConfig(AuthType.OAuth, Token: "y0"),
+            ExternalEffectsAllowed: true);
 
         using var http = TrackerHttpClientFactory.Create(
             profile,
@@ -39,7 +40,7 @@ public sealed class TrackerHttpClientFactoryTests
     {
         var captured = new TestHttpMessageHandler();
         var profile = new EffectiveProfile("t", OrgType.Cloud, "o", ReadOnly: true,
-            new AuthConfig(AuthType.OAuth, Token: "y"));
+            new AuthConfig(AuthType.OAuth, Token: "y"), ExternalEffectsAllowed: true);
 
         using var http = TrackerHttpClientFactory.Create(
             profile, new OAuthProvider("y"), innerHandler: captured);
@@ -55,7 +56,7 @@ public sealed class TrackerHttpClientFactoryTests
     {
         var captured = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
         var profile = new EffectiveProfile("t", OrgType.Yandex360, "org-1", false,
-            new AuthConfig(AuthType.OAuth, Token: "y"));
+            new AuthConfig(AuthType.OAuth, Token: "y"), ExternalEffectsAllowed: true);
 
         using var http = TrackerHttpClientFactory.Create(
             profile, new OAuthProvider("y"), innerHandler: captured);
@@ -73,7 +74,7 @@ public sealed class TrackerHttpClientFactoryTests
     {
         var captured = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
         var profile = new EffectiveProfile("t", OrgType.Cloud, "o", false,
-            new AuthConfig(AuthType.OAuth, Token: "y"));
+            new AuthConfig(AuthType.OAuth, Token: "y"), ExternalEffectsAllowed: true);
 
         using var http = TrackerHttpClientFactory.Create(
             profile, new OAuthProvider("y"), innerHandler: captured,
@@ -119,7 +120,7 @@ public sealed class TrackerHttpClientFactoryTests
                 .Push(req => Record(req, HttpStatusCode.OK));
 
             var profile = new EffectiveProfile("t", OrgType.Cloud, "org-1", false,
-                new AuthConfig(AuthType.OAuth, Token: "y0"));
+                new AuthConfig(AuthType.OAuth, Token: "y0"), ExternalEffectsAllowed: true);
 
             using var http = TrackerHttpClientFactory.Create(
                 profile, new OAuthProvider("y0"), innerHandler: captured);

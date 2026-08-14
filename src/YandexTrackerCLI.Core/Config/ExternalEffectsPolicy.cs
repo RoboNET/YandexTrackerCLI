@@ -8,7 +8,7 @@ using Api.Errors;
 /// Когда она выключена (<c>external_effects: false</c> в профиле либо
 /// <c>YT_EXTERNAL_EFFECTS=0</c>), запрещены два класса мутирующих обращений — призыв
 /// (<c>summonees</c>, <c>maillistSummonees</c> в теле) и мутации автоматизаций
-/// (<c>triggers</c>, <c>autoactions</c> в пути). Чтение не ограничивается.
+/// (<c>triggers</c>, <c>autoactions</c>, <c>macros</c> в пути). Чтение не ограничивается.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -29,30 +29,42 @@ public static class ExternalEffectsPolicy
 {
     /// <summary>
     /// Сегменты пути, обозначающие ресурсы автоматизаций Трекера
-    /// (<c>queues/{KEY}/triggers</c>, <c>queues/{KEY}/autoactions</c>).
+    /// (<c>queues/{KEY}/triggers</c>, <c>queues/{KEY}/autoactions</c>,
+    /// <c>queues/{KEY}/macros</c>) — то есть всю группу <c>yt automation</c>.
     /// </summary>
     private static readonly string[] AutomationSegments =
     {
         "triggers",
         "autoactions",
+        "macros",
     };
 
     /// <summary>
-    /// Ищет в пути запроса сегмент ресурса автоматизаций.
+    /// Ищет в пути запроса ресурс автоматизаций формы
+    /// <c>queues/{KEY}/{triggers|autoactions|macros}</c>.
     /// </summary>
     /// <remarks>
+    /// Совпадение позиционное, как у соседних политик (<c>issues/{KEY}</c>,
+    /// <c>queues/{KEY}</c>): «сегмент где угодно в пути» отклонял бы любую запись в очередь
+    /// с ключом <c>TRIGGERS</c> или <c>MACROS</c> — это валидные ключи Трекера, и отказ по
+    /// ним был бы и ложным, и необъяснимым для того, кто его получил.
     /// Сегменты сравниваются после percent-декодирования (см. <c>RequestUriPath</c>),
     /// иначе <c>%74riggers</c> проходил бы мимо проверки.
     /// </remarks>
-    /// <param name="decodedSegments">Декодированные сегменты пути запроса.</param>
+    /// <param name="decodedSegments">Декодированные сегменты пути запроса по порядку.</param>
     /// <returns>Каноническое имя найденного сегмента или <c>null</c>, если его нет.</returns>
-    public static string? FindAutomationSegment(IEnumerable<string> decodedSegments)
+    public static string? FindAutomationSegment(IReadOnlyList<string> decodedSegments)
     {
-        foreach (var segment in decodedSegments)
+        for (var i = 0; i + 2 < decodedSegments.Count; i++)
         {
+            if (!string.Equals(decodedSegments[i], "queues", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             foreach (var automation in AutomationSegments)
             {
-                if (string.Equals(segment, automation, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(decodedSegments[i + 2], automation, StringComparison.OrdinalIgnoreCase))
                 {
                     return automation;
                 }
@@ -92,7 +104,7 @@ public static class ExternalEffectsPolicy
     /// <summary>
     /// Строит исключение об отказе для мутации автоматизаций.
     /// </summary>
-    /// <param name="segment">Найденный сегмент пути (<c>triggers</c>/<c>autoactions</c>).</param>
+    /// <param name="segment">Найденный сегмент пути (<c>triggers</c>/<c>autoactions</c>/<c>macros</c>).</param>
     /// <param name="operation">Описание операции, например <c>POST queues/DEV/triggers</c>.</param>
     /// <param name="profileName">Имя профиля.</param>
     /// <returns>Исключение с кодом <see cref="ErrorCode.PolicyViolation"/>.</returns>
@@ -102,7 +114,7 @@ public static class ExternalEffectsPolicy
     /// <summary>
     /// Формирует текст отказа для мутации автоматизаций.
     /// </summary>
-    /// <param name="segment">Найденный сегмент пути (<c>triggers</c>/<c>autoactions</c>).</param>
+    /// <param name="segment">Найденный сегмент пути (<c>triggers</c>/<c>autoactions</c>/<c>macros</c>).</param>
     /// <param name="operation">Описание операции, например <c>POST queues/DEV/triggers</c>.</param>
     /// <param name="profileName">Имя профиля.</param>
     /// <returns>Готовое сообщение об ошибке.</returns>

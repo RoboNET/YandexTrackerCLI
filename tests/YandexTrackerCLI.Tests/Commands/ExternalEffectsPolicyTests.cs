@@ -11,7 +11,8 @@ using Http;
 /// <summary>
 /// End-to-end тесты политики профиля <c>external_effects</c>: «не инициировать рассылку и
 /// интеграции явно». Запрещены призыв (<c>summonees</c>/<c>maillistSummonees</c> в теле на
-/// любой вложенности) и мутации автоматизаций (<c>triggers</c>/<c>autoactions</c>); чтение
+/// любой вложенности) и мутации автоматизаций — вся группа <c>yt automation</c>
+/// (<c>triggers</c>/<c>autoactions</c>/<c>macros</c>); чтение
 /// не ограничено. Мутируют глобальное state (env + Console + AsyncLocal), поэтому последовательно.
 /// </summary>
 [NotInParallel("yt-cli-global-state")]
@@ -241,6 +242,88 @@ public sealed class ExternalEffectsPolicyTests
         using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
         await Assert.That(saved.RootElement.GetProperty("profiles").GetProperty("ci")
             .GetProperty("external_effects").GetBoolean()).IsFalse();
+    }
+
+    /// <summary>
+    /// Мутации автоматизаций запрещены через реальные команды — по всей группе
+    /// <c>yt automation</c>, включая макросы: триггер, автодействие и макрос одинаково
+    /// переживают сессию и правятся на очереди.
+    /// </summary>
+    /// <param name="commandLine">Командная строка (аргументы через пробел).</param>
+    [Test]
+    [Arguments("automation trigger create --queue DEV --name t")]
+    [Arguments("automation trigger update 7 --queue DEV --name t")]
+    [Arguments("automation trigger delete 7 --queue DEV")]
+    [Arguments("automation autoaction create --queue DEV --name a")]
+    [Arguments("automation autoaction delete 7 --queue DEV")]
+    [Arguments("automation macro create --queue DEV --name m")]
+    [Arguments("automation macro update 7 --queue DEV --name m")]
+    [Arguments("automation macro delete 7 --queue DEV")]
+    public async Task AutomationMutation_IsBlocked(string commandLine)
+    {
+        using var env = new TestEnv();
+        env.SetConfig(RestrictedConfig);
+        var inner = new TestHttpMessageHandler();
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(commandLine.Split(' '), sw, er);
+
+        await Assert.That(exit).IsEqualTo(10);
+        await AssertPolicyViolation(er.ToString(), "queues/DEV/");
+        await Assert.That(inner.Seen).IsEmpty();
+    }
+
+    /// <summary>
+    /// Чтение автоматизаций теми же командами проходит: политика ограничивает запись.
+    /// </summary>
+    /// <param name="response">Ответ, который отдаёт сервер.</param>
+    /// <param name="args">Аргументы команды.</param>
+    [Test]
+    [Arguments("[]", new[] { "automation", "trigger", "list", "--queue", "DEV" })]
+    [Arguments("[]", new[] { "automation", "autoaction", "list", "--queue", "DEV" })]
+    [Arguments("[]", new[] { "automation", "macro", "list", "--queue", "DEV" })]
+    [Arguments("""{"id":7}""", new[] { "automation", "trigger", "get", "7", "--queue", "DEV" })]
+    [Arguments("""{"id":7}""", new[] { "automation", "macro", "get", "7", "--queue", "DEV" })]
+    public async Task AutomationRead_Succeeds(string response, string[] args)
+    {
+        using var env = new TestEnv();
+        env.SetConfig(RestrictedConfig);
+        var inner = new TestHttpMessageHandler();
+        inner.Push(_ => Json(response));
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(args, sw, er);
+
+        await Assert.That(er.ToString()).IsEmpty();
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(inner.Seen.Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// Без ограничения те же мутации уходят наружу — иначе предыдущий тест доказывал бы
+    /// лишь то, что команда не работает вовсе.
+    /// </summary>
+    [Test]
+    public async Task AutomationMutation_PassesThrough_WhenPolicyIsOff()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var inner = new TestHttpMessageHandler();
+        inner.Push(_ => Json("""{"id":7}"""));
+        env.InnerHandler = inner;
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(
+            new[] { "automation", "macro", "create", "--queue", "DEV", "--name", "m" }, sw, er);
+
+        await Assert.That(er.ToString()).IsEmpty();
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(inner.Seen.Count).IsEqualTo(1);
     }
 
     /// <summary>

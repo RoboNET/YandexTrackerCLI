@@ -100,12 +100,19 @@ public static class EnvOverrides
         // запрещено для YT_ALLOWED_WRITE_ISSUES. Разбор строгий: мусор — ConfigError, а не
         // молчаливое «выключено» (см. EnvBool).
         var rawExternalEffects = env.GetValueOrDefault("YT_EXTERNAL_EFFECTS");
-        var envExternalEffects = EnvBool.ResolveStrict(
-            rawExternalEffects,
-            "YT_EXTERNAL_EFFECTS",
-            "the profile's external_effects");
-        var envForbidsExternalEffects =
-            !envExternalEffects && EnvBool.Classify(rawExternalEffects) != EnvBoolValue.Unset;
+        var envForbidsExternalEffects = EnvBool.Classify(rawExternalEffects) switch
+        {
+            // Ужесточает только явное отрицание; true и снятая переменная оставляют
+            // действовать политику профиля.
+            EnvBoolValue.False => true,
+            EnvBoolValue.True or EnvBoolValue.Unset => false,
+            // Мусор — ConfigError: текст отказа (перечень написаний, подсказка про fallback)
+            // живёт в ResolveStrict, поэтому бросает он же.
+            _ => EnvBool.ResolveStrict(
+                rawExternalEffects,
+                "YT_EXTERNAL_EFFECTS",
+                "the profile's external_effects"),
+        };
         var externalEffectsAllowed =
             (baseProfile?.ExternalEffects ?? true) && !envForbidsExternalEffects;
 
@@ -178,11 +185,11 @@ public static class EnvOverrides
             orgId,
             readOnly,
             auth,
+            ExternalEffectsAllowed: externalEffectsAllowed,
             DefaultFormat: baseProfile?.DefaultFormat,
             AllowedQueues: allowedQueues,
             AllowedWriteIssues: allowedWriteIssues,
-            AllowedWriteIssuesSource: writeIssuesSource,
-            ExternalEffectsAllowed: externalEffectsAllowed);
+            AllowedWriteIssuesSource: writeIssuesSource);
     }
 
     private static string? Trimmed(IReadOnlyDictionary<string, string?> env, string key)

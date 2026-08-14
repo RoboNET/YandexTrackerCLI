@@ -117,6 +117,8 @@ public sealed class ExternalEffectsGuardHandlerTests
     [Arguments("queues/DEV/triggers/7")]
     [Arguments("queues/DEV/autoactions")]
     [Arguments("queues/DEV/autoactions/7")]
+    [Arguments("queues/DEV/macros")]
+    [Arguments("queues/DEV/macros/7")]
     public async Task AutomationMutation_IsBlocked(string path)
     {
         var (client, inner) = Build(allowed: false);
@@ -145,6 +147,8 @@ public sealed class ExternalEffectsGuardHandlerTests
     [Arguments("queues/DEV/triggers")]
     [Arguments("queues/DEV/triggers/7")]
     [Arguments("queues/DEV/autoactions")]
+    [Arguments("queues/DEV/macros")]
+    [Arguments("queues/DEV/macros/7")]
     public async Task AutomationRead_PassesThrough(string path)
     {
         var (client, inner) = Build(allowed: false);
@@ -158,14 +162,21 @@ public sealed class ExternalEffectsGuardHandlerTests
     }
 
     /// <summary>
-    /// Percent-encoding и регистр сегмента не дают обхода: сравнение идёт после
-    /// декодирования.
+    /// Регистр сегмента не даёт обхода: сравнение регистронезависимое.
     /// </summary>
+    /// <remarks>
+    /// Percent-encoding проверяется на своём уровне (<c>RequestUriPathTests</c> и
+    /// <c>ExternalEffectsPolicyTests.FindAutomationSegment_*</c>): <see cref="Uri"/>
+    /// канонизирует unreserved-символы ещё при склейке с BaseAddress, поэтому кейс
+    /// вида <c>%74riggers</c> здесь до декодирования просто не доходит и проверял бы
+    /// не то, что заявляет.
+    /// </remarks>
+    /// <param name="path">Путь запроса.</param>
     [Test]
-    [Arguments("queues/DEV/%74riggers")]
     [Arguments("queues/DEV/TRIGGERS")]
-    [Arguments("queues/DEV/auto%61ctions")]
-    public async Task PercentEncodedSegment_DoesNotBypassTheGuard(string path)
+    [Arguments("queues/DEV/AutoActions")]
+    [Arguments("queues/DEV/Macros")]
+    public async Task SegmentCase_DoesNotBypassTheGuard(string path)
     {
         var (client, inner) = Build(allowed: false);
 
@@ -173,6 +184,86 @@ public sealed class ExternalEffectsGuardHandlerTests
             await client.PostAsync(path, Json("""{"name":"t"}""")));
 
         await Assert.That(ex!.Code).IsEqualTo(ErrorCode.PolicyViolation);
+        await Assert.That(inner.Seen).IsEmpty();
+        client.Dispose();
+    }
+
+    /// <summary>
+    /// Совпадение позиционное: очередь с ключом <c>TRIGGERS</c> — валидный ключ Трекера,
+    /// и запись в саму очередь блокировать нельзя, а вот её автоматизации — нужно.
+    /// </summary>
+    [Test]
+    public async Task QueueNamedLikeAutomation_IsNotBlocked()
+    {
+        var (client, inner) = Build(allowed: false);
+        inner.Push(_ => Ok());
+
+        using var resp = await client.PostAsync("queues/TRIGGERS/issues", Json("""{"summary":"s"}"""));
+
+        await Assert.That(resp.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(inner.Seen.Count).IsEqualTo(1);
+        client.Dispose();
+    }
+
+    /// <summary>
+    /// …а её автоматизации — блокируются: сегмент стоит на позиции ресурса.
+    /// </summary>
+    [Test]
+    [Arguments("queues/TRIGGERS/triggers")]
+    [Arguments("queues/MACROS/macros")]
+    public async Task AutomationOfQueueNamedLikeAutomation_IsBlocked(string path)
+    {
+        var (client, inner) = Build(allowed: false);
+
+        var ex = await Assert.ThrowsAsync<TrackerException>(async () =>
+            await client.PostAsync(path, Json("""{"name":"t"}""")));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.PolicyViolation);
+        await Assert.That(inner.Seen).IsEmpty();
+        client.Dispose();
+    }
+
+    /// <summary>
+    /// Мутирующий запрос без URI проверить нельзя — значит, наружу он не идёт:
+    /// «не знаю» в барьере означает отказ, а не пропуск.
+    /// </summary>
+    [Test]
+    public async Task MutatingRequestWithoutUri_IsBlocked()
+    {
+        var inner = new TestHttpMessageHandler();
+        using var handler = new ExternalEffectsGuardHandler(externalEffectsAllowed: false, "ci")
+        {
+            InnerHandler = inner,
+        };
+        // HttpClient подставил бы BaseAddress вместо пустого URI, поэтому цепочка
+        // вызывается напрямую — только так проверяется само поведение guard'а.
+        using var invoker = new HttpMessageInvoker(handler);
+        using var req = new HttpRequestMessage { Method = HttpMethod.Post, Content = Json("""{"text":"hi"}""") };
+
+        var ex = await Assert.ThrowsAsync<TrackerException>(async () =>
+            await invoker.SendAsync(req, CancellationToken.None));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.PolicyViolation);
+        await Assert.That(ex.Message).Contains("external_effects");
+        await Assert.That(inner.Seen).IsEmpty();
+    }
+
+    /// <summary>
+    /// Тело сверх лимита инспекции — отказ, а не буферизация: guard нельзя превратить
+    /// в поглотитель памяти, а недоказуемо безопасное тело наружу не идёт.
+    /// </summary>
+    [Test]
+    public async Task OversizedJsonBody_IsBlocked()
+    {
+        var (client, inner) = Build(allowed: false);
+        var huge = "{\"text\":\"" + new string('a', 5 * 1024 * 1024) + "\"}";
+
+        var ex = await Assert.ThrowsAsync<TrackerException>(async () =>
+            await client.PostAsync("issues/DEV-42/comments", Json(huge)));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.PolicyViolation);
+        await Assert.That(ex.Message).Contains("too large");
+        await Assert.That(ex.Message).Contains("external_effects");
         await Assert.That(inner.Seen).IsEmpty();
         client.Dispose();
     }
@@ -272,6 +363,7 @@ public sealed class ExternalEffectsGuardHandlerTests
     [Arguments("issues/DEV-42/comments", """{"text":"hi","summonees":["user"]}""")]
     [Arguments("queues/DEV/triggers", """{"name":"t"}""")]
     [Arguments("queues/DEV/autoactions/7", """{"name":"a"}""")]
+    [Arguments("queues/DEV/macros", """{"name":"m"}""")]
     [Arguments("issues/DEV-42/comments", """{"text": """)]
     public async Task ExternalEffectsAllowed_EverythingPassesThrough(string path, string body)
     {
