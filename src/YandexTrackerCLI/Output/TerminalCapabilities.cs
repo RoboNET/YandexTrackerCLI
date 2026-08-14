@@ -1,6 +1,7 @@
 namespace YandexTrackerCLI.Output;
 
 using System.Globalization;
+using Core.Config;
 
 /// <summary>
 /// Snapshot возможностей текущего терминала: цвета, OSC 8 hyperlinks, ширина,
@@ -105,11 +106,13 @@ public sealed record TerminalCapabilities(
             return false;
         }
 
-        // Force on/off через env override.
+        // Force on/off через env override. Разбор мягкий (EnvBool.IsTruthyLenient): переменная
+        // лишь включает необязательную возможность вывода, ничего не ограничивая, поэтому
+        // «задано что угодно, кроме явного отрицания, — значит включено» здесь уместно.
         var ytHyper = GetEnv(env, "YT_HYPERLINKS");
         if (!string.IsNullOrEmpty(ytHyper))
         {
-            return IsTruthy(ytHyper);
+            return EnvBool.IsTruthyLenient(ytHyper);
         }
 
         // Эвристики «современный терминал».
@@ -226,21 +229,4 @@ public sealed record TerminalCapabilities(
 
     private static string? GetEnv(IReadOnlyDictionary<string, string?> env, string key) =>
         env.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v) ? v : null;
-
-    private static bool IsTruthy(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-        var v = value.Trim();
-        if (string.Equals(v, "0", StringComparison.Ordinal)
-            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "no", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-        return true;
-    }
 }

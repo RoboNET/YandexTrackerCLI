@@ -85,4 +85,66 @@ public sealed class TrackerHttpClientFactoryTests
         _ = await http.GetAsync("myself");
         await Assert.That(captured.Seen[0].Headers.UserAgent.ToString()).Contains("yandex-tracker-cli/");
     }
+
+    /// <summary>
+    /// <see cref="RetryHandler"/> — самый внешний хендлер, поэтому на повторной попытке
+    /// ТОТ ЖЕ <see cref="HttpRequestMessage"/> проходит цепочку заново. Заголовки, которые
+    /// хендлеры добавляют (а не присваивают), обязаны уйти РОВНО ОДИН раз в каждой попытке:
+    /// два <c>X-Cloud-Org-ID</c> — невалидный заголовок, а два разных DPoP-доказательства
+    /// (с разными <c>jti</c>) сервер обязан отвергнуть.
+    /// </summary>
+    [Test]
+    public async Task Factory_OnRetry_SendsEachInjectedHeaderExactlyOnce()
+    {
+        var proofs = 0;
+        DPoPHandler.ProofFactory.Value = (_, _) => $"proof-{Interlocked.Increment(ref proofs)}";
+        try
+        {
+            var orgPerAttempt = new List<string[]>();
+            var dpopPerAttempt = new List<string[]>();
+            var authPerAttempt = new List<string[]>();
+
+            HttpResponseMessage Record(HttpRequestMessage req, HttpStatusCode status)
+            {
+                orgPerAttempt.Add(Values(req, "X-Cloud-Org-ID"));
+                dpopPerAttempt.Add(Values(req, "DPoP"));
+                authPerAttempt.Add(Values(req, "Authorization"));
+                var resp = new HttpResponseMessage(status);
+                resp.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
+                return resp;
+            }
+
+            var captured = new TestHttpMessageHandler()
+                .Push(req => Record(req, HttpStatusCode.ServiceUnavailable))
+                .Push(req => Record(req, HttpStatusCode.OK));
+
+            var profile = new EffectiveProfile("t", OrgType.Cloud, "org-1", false,
+                new AuthConfig(AuthType.OAuth, Token: "y0"));
+
+            using var http = TrackerHttpClientFactory.Create(
+                profile, new OAuthProvider("y0"), innerHandler: captured);
+
+            using var resp = await http.GetAsync("https://api.tracker.yandex.net/v3/myself");
+
+            await Assert.That(resp.StatusCode).IsEqualTo(HttpStatusCode.OK);
+            await Assert.That(orgPerAttempt.Count).IsEqualTo(2);
+
+            // Первая попытка.
+            await Assert.That(orgPerAttempt[0]).IsEquivalentTo(new[] { "org-1" });
+            await Assert.That(dpopPerAttempt[0]).IsEquivalentTo(new[] { "proof-1" });
+            await Assert.That(authPerAttempt[0].Length).IsEqualTo(1);
+
+            // Повторная попытка: заголовки заменены, а не накоплены.
+            await Assert.That(orgPerAttempt[1]).IsEquivalentTo(new[] { "org-1" });
+            await Assert.That(dpopPerAttempt[1]).IsEquivalentTo(new[] { "proof-2" });
+            await Assert.That(authPerAttempt[1].Length).IsEqualTo(1);
+        }
+        finally
+        {
+            DPoPHandler.ProofFactory.Value = null;
+        }
+    }
+
+    private static string[] Values(HttpRequestMessage req, string name) =>
+        req.Headers.TryGetValues(name, out var v) ? v.ToArray() : [];
 }

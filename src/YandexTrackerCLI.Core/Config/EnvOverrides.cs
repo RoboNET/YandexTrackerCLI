@@ -88,7 +88,10 @@ public static class EnvOverrides
                 "Organization not configured. Set YT_ORG_TYPE and YT_ORG_ID, or configure profile.");
         }
 
-        var envRo = ParseBool(Trimmed(env, "YT_READ_ONLY"));
+        // Разбор строгий (см. EnvBool): нераспознанное значение — ошибка, а не «выключено».
+        // Единственная задача переменной — ограничивать, и молча проигнорировать `on` или
+        // опечатку значило бы оставить без защиты того, кто считает себя защищённым.
+        var envRo = EnvBool.ResolveStrict(env, "YT_READ_ONLY", "the profile's read_only");
         var readOnly = cliReadOnly || envRo || (baseProfile?.ReadOnly ?? false);
 
         // allowed_queues намеренно не имеет env-override: это свойство самих креденшелов,
@@ -179,7 +182,4 @@ public static class EnvOverrides
         null        => null,
         _ => throw new TrackerException(ErrorCode.ConfigError, $"Unknown YT_ORG_TYPE: '{value}'."),
     };
-
-    private static bool ParseBool(string? value) =>
-        value is "1" or "true" or "True" or "TRUE" or "yes";
 }

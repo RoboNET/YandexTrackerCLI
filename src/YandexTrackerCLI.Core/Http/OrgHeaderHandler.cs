@@ -53,6 +53,10 @@ public sealed class OrgHeaderHandler : DelegatingHandler
             OrgType.Cloud     => "X-Cloud-Org-ID",
             _ => throw new InvalidOperationException($"Unknown OrgType: {_type}"),
         };
+        // RetryHandler — самый внешний в цепочке, поэтому на повторной попытке тот же самый
+        // HttpRequestMessage проходит через нас заново. TryAddWithoutValidation ДОБАВЛЯЕТ
+        // значение, а не заменяет, так что без Remove ушло бы «X-Cloud-Org-ID: org-1, org-1».
+        request.Headers.Remove(header);
         request.Headers.TryAddWithoutValidation(header, _orgId);
         return base.SendAsync(request, ct);
     }

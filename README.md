@@ -262,7 +262,7 @@ yt config set allowed_write_issues DEV-42 --profile work  # писать тол�
 yt config get allowed_write_issues --profile work         # → "DEV-42"
 ```
 
-Доступные ключи для `config set`: `org_type`, `org_id`, `read_only`, `default_format`, `allowed_queues`, `allowed_write_issues`.
+Доступные ключи для `config set`: `org_type`, `org_id`, `read_only`, `default_format`, `allowed_queues`, `allowed_write_issues`. Значение `read_only` принимает те же написания, что и `YT_READ_ONLY` (`1`/`true`/`yes`/`on` и `0`/`false`/`no`/`off`, регистронезависимо); всё остальное — `invalid_args` (exit 2).
 
 **Политики профиля через `config set` можно только ужесточить.** `read_only: true → false`, снятие или расширение `allowed_queues`/`allowed_write_issues` отклоняются с `policy_violation` (exit 10). Иначе ограничения не было бы вовсе: командную строку формирует тот же вызывающий, которого ограничивают. Ослабить политику можно только пересоздав профиль (см. [Границы политик профиля](#границы-политик-профиля)).
 
@@ -595,25 +595,32 @@ YT_CONFIG_PATH=/tmp/mine.json yt auth login --type service-account \
 
 | Env | Назначение |
 |---|---|
-| `YT_PROFILE` | Имя профиля (аналог `--profile`) |
-| `YT_OAUTH_TOKEN` | OAuth-токен (перекрывает файл) |
+| `YT_PROFILE` | Имя профиля (аналог `--profile`; флаг важнее) |
+| `YT_OAUTH_TOKEN` | OAuth-токен (перекрывает профиль) |
 | `YT_IAM_TOKEN` | Готовый IAM-токен |
-| `YT_SERVICE_ACCOUNT_ID` / `YT_KEY_ID` / `YT_KEY_FILE` / `YT_KEY_PEM` | Параметры сервис-аккаунта |
-| `YT_ORG_TYPE` | `yandex360` или `cloud` |
+| `YT_SERVICE_ACCOUNT_ID` / `YT_SERVICE_ACCOUNT_KEY_ID` / `YT_SERVICE_ACCOUNT_KEY_FILE` / `YT_SERVICE_ACCOUNT_KEY_PEM` | Параметры сервис-аккаунта. Задана хоть одна — нужны `_ID` + `_KEY_ID` + (`_KEY_FILE` либо `_KEY_PEM`), иначе `config_error` (exit 9) |
+| `YT_OAUTH_CLIENT_ID` | client_id для браузерного `yt auth login --type oauth` без `--token`; `--client-id` важнее |
+| `YT_ORG_TYPE` | Ровно `yandex360` или `cloud` (регистрозависимо), иначе `config_error` (exit 9) |
 | `YT_ORG_ID` | ID организации |
-| `YT_READ_ONLY` | `1`/`true` — принудительно read-only |
-| `YT_ALLOWED_WRITE_ISSUES` | Список ключей задач через запятую: запись разрешена только в них. Список профиля **сужает** (действует пересечение), расширить не может. Значение без единого ключа (`","`) или список, не пересекающийся со списком профиля, — `config_error` |
-| `YT_CONFIG_PATH` | Путь к конфигу (default `~/.config/yandex-tracker/config.json`) |
-| `YT_API_BASE_URL` | Override базового URL Tracker API |
+| `YT_READ_ONLY` | Включают `1`/`true`/`yes`/`on`, выключают `0`/`false`/`no`/`off` (регистронезависимо, пробелы по краям обрезаются); пусто или одни пробелы = не задана; любое другое значение — `config_error` (exit 9), а не молчаливое «выключено». Складывается по ИЛИ с `--read-only` и `read_only` профиля — только ужесточает, снять политику профиля нельзя |
+| `YT_ALLOWED_WRITE_ISSUES` | Список ключей задач через запятую: запись разрешена только в них. Список профиля **сужает** (действует пересечение), расширить не может. Значение без единого ключа (`","`) или список, не пересекающийся со списком профиля, — `config_error` (exit 9). См. [Ограничение области записи](#ограничение-области-записи) |
+| `YT_CONFIG_PATH` | Путь к конфигу (default `~/.config/yandex-tracker/config.json`). **Ослабляет:** другой конфиг = другие или никакие политики профиля — см. «Известные пределы» выше |
+| `XDG_CONFIG_HOME` | База для `<...>/yandex-tracker/config.json` и DPoP-ключей (default `~/.config`); `YT_CONFIG_PATH` важнее |
+| `XDG_CACHE_HOME` | База для кэша IAM-токенов `<...>/yandex-tracker/iam-tokens.json` (default `~/.cache`) |
+| `YT_API_BASE_URL` | Override базового URL Tracker API; невалидный URL даёт необработанное исключение и exit 1 |
 | `YT_TIMEOUT` | HTTP timeout в секундах (default 30). Допустимо целое от 1 до 86400; всё остальное (`0`, отрицательное, нечисловое) отвергается как `invalid_args` (exit 2) — так же, как и `--timeout` с тем же значением, а не игнорируется молча |
-| `YT_LOG_FILE` | Путь к файлу wire-log |
-| `YT_LOG_RAW` | `1`/`true` — отключить маскирование секретов в wire-log |
-| `YT_FORMAT` | Формат вывода (`auto`/`json`/`minimal`/`table`) |
+| `YT_LOG_FILE` | Путь к файлу wire-log; читается всеми командами. `--log-file` важнее: при заданном флаге файл из env не создаётся |
+| `YT_LOG_RAW` | Отключает маскирование секретов в wire-log (все команды). Разбор строгий, как у `YT_READ_ONLY`: снимают маскирование только `1`/`true`/`yes`/`on`, оставляют — `0`/`false`/`no`/`off` и незаданная переменная (регистронезависимо, пробелы по краям обрезаются); любое другое значение — `config_error` (exit 9), а не молчаливое «включено». Альтернатива — флаг `--log-raw` |
+| `YT_FORMAT` | Формат вывода (`auto`/`json`/`minimal`/`table`, регистронезависимо); мусорное значение — `invalid_args` (exit 2). `--format` важнее |
 | `YT_PAGER` | Команда pager (default `less -R -F -X`); `cat` или пустая — отключить |
-| `YT_HYPERLINKS` | Force-on (`1`) или force-off (`0`) для OSC 8 |
-| `YT_TERMINAL_WIDTH` | Override ширины терминала (clamp [40, 200]) |
-| `NO_COLOR` | Любое непустое значение отключает ANSI-цвета ([no-color.org](https://no-color.org)) |
+| `YT_HYPERLINKS` | Force для OSC 8: выключают `0`/`false`/`no`/`off`, любое другое непустое значение включает. При перенаправленном stdout и `TERM=dumb` игнорируется |
+| `YT_TERMINAL_WIDTH` | Override ширины терминала (clamp [40, 200]); нечисловое или ≤ 0 молча игнорируется |
+| `NO_COLOR` | Любое непустое значение отключает ANSI-цвета ([no-color.org](https://no-color.org)). Собственной `YT_NO_COLOR` нет: она ничего не добавляла к стандартной переменной и была удалена |
 | `PAGER` | Системная команда pager (fallback если `YT_PAGER` не задан) |
+| `TERM`, `TERM_PROGRAM`, `COLORTERM` | Читаются для определения возможностей терминала: `TERM=dumb` выключает цвета и OSC 8, остальные включают ссылки по эвристике |
+| `HOME` / `USERPROFILE` | Домашний каталог, от которого раскрывается `~` в путях (конфиг, DPoP-ключи, кэш, `--log-file ~/...`). Порядок: `HOME` → `USERPROFILE` → системный запрос профиля пользователя |
+
+Env-переменной для `allowed_queues` нет намеренно: ограничение очередей задаётся только в профиле, потому что окружение так же управляемо вызывающим, как и командная строка. По той же причине `YT_READ_ONLY` и `YT_ALLOWED_WRITE_ISSUES` — страховка того, кто запускает процесс, а не барьер против него: настоящей границей остаётся то, что вызывающий изменить не может (см. «Известные пределы»).
 
 ## Wire-log (отладка HTTP)
 
@@ -622,7 +629,10 @@ YT_CONFIG_PATH=/tmp/mine.json yt auth login --type service-account \
 ```bash
 yt --log-file ~/yt.log user me
 YT_LOG_FILE=~/yt.log yt issue get TECH-1
+YT_LOG_FILE=~/yt.log yt auth relogin --profile work
 ```
+
+Флаг важнее env: при заданном `--log-file` файл из `YT_LOG_FILE` не создаётся вовсе. Env-переменные работают для всех команд, а не только для `auth login`/`auth relogin`, поэтому включённый на весь сеанс `YT_LOG_FILE` собирает обмен каждой команды — держите его включённым только на время отладки и удаляйте файл после.
 
 Каждая пара запрос/ответ нумеруется (`req-N` / `resp-N`) для сопоставления при параллельных запросах. Файл создаётся с правами `0600` (на POSIX); путь поддерживает `~/`.
 
@@ -637,6 +647,8 @@ yt --log-raw --log-file ~/yt-raw.log auth login --type federated ...
 ```
 
 В raw-режиме в файл попадают живые токены, OAuth-коды, DPoP proofs (с автоматическим декодированием header/payload). **Используйте только для отладки и удаляйте файл сразу после.**
+
+Raw-режим включается только явно: `--log-raw` либо `YT_LOG_RAW` в написании `1`/`true`/`yes`/`on`. Нераспознанное значение переменной (`YT_LOG_RAW=disabled`) команду не выполняет — это `config_error` (exit 9). Отказ идёт в сторону «маскируем»: мусор в переменной никогда не выключает маскирование.
 
 ## Exit-коды
 

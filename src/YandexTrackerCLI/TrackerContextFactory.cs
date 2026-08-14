@@ -168,8 +168,10 @@ public static class TrackerContextFactory
     /// Whether the wire-log handler should mask sensitive headers and body fields.
     /// Defaults to <c>true</c>. When <c>false</c>, the wire-log captures every value verbatim
     /// (live tokens, OAuth codes, DPoP proofs); intended ONLY for debugging. The CLI also
-    /// honours env <c>YT_LOG_RAW=1</c> (any non-empty value other than "0"/"false"), and the
-    /// effective setting is <c>mask = !(cli flag OR env)</c>.
+    /// honours env <c>YT_LOG_RAW</c>, parsed strictly (<c>1</c>/<c>true</c>/<c>yes</c>/<c>on</c>
+    /// unmask; <c>0</c>/<c>false</c>/<c>no</c>/<c>off</c> and unset keep masking; anything else
+    /// is a <see cref="ErrorCode.ConfigError"/>). The effective setting is
+    /// <c>mask = !(cli flag OR env)</c>.
     /// </param>
     /// <param name="innerHandler">Optional HTTP inner handler — for unit tests.</param>
     /// <param name="iamExchangeOverride">Optional IAM exchange client — for unit tests of the service-account flow.</param>
@@ -213,11 +215,11 @@ public static class TrackerContextFactory
                 ? envLog
                 : null;
 
-        // Mask resolution: --log-raw (cliReadOnly-style flag, true = unmask) OR YT_LOG_RAW=1
-        // disables masking. We read the env at the same level as wireLogPath so that scripts
-        // can flip raw mode without re-plumbing every command.
-        var rawByEnv = env.TryGetValue("YT_LOG_RAW", out var rawValue)
-            && IsTruthy(rawValue);
+        // Mask resolution: --log-raw (flag, true = unmask) OR YT_LOG_RAW=1 disables masking.
+        // Env читается на том же уровне, что и wireLogPath, чтобы скрипту не приходилось
+        // переплетать raw-режим через каждую команду. Разбор строгий: снятие маскирования —
+        // отказ защиты, поэтому мусор в переменной валит команду, а не тихо льёт токены в файл.
+        var rawByEnv = EnvReader.ResolveLogRaw(env);
         var effectiveMask = wireLogMask && !rawByEnv;
 
         IWireLogSink? wireLogSink = null;
@@ -456,30 +458,6 @@ public static class TrackerContextFactory
 
         var wire = new WireLogHandler(sink, maskSensitive: maskSensitive) { InnerHandler = new SocketsHttpHandler() };
         return new HttpClient(wire, disposeHandler: true);
-    }
-
-    /// <summary>
-    /// Treats common "boolean-like" environment variable values as truthy. Anything that is
-    /// not <c>null</c>/empty/<c>0</c>/<c>false</c>/<c>no</c>/<c>off</c> (case-insensitive) is
-    /// considered truthy — matches widely used conventions for env-var flags.
-    /// </summary>
-    private static bool IsTruthy(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        var v = value.Trim();
-        if (string.Equals(v, "0", StringComparison.Ordinal)
-            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "no", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
     }
 
     private static RSA LoadRsa(AuthConfig a)
