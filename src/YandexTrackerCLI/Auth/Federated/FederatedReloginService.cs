@@ -54,7 +54,11 @@ public static class FederatedReloginService
     /// <exception cref="TrackerException">
     /// <see cref="ErrorCode.InvalidArgs"/> — профиль не существует, не является federated,
     /// либо у него отсутствует <c>federation_id</c>/<c>dpop_key_path</c>;
-    /// <see cref="ErrorCode.AuthFailed"/> — ошибки PKCE/обмена <c>code → token</c>.
+    /// <see cref="ErrorCode.AuthFailed"/> — ошибки PKCE/обмена <c>code → token</c>;
+    /// <see cref="ErrorCode.ConfigError"/> — новые токены получены, но сохранить их не
+    /// удалось: отказ файловой записи либо профиль удалили или подменили параллельным запуском
+    /// <c>yt</c> за время браузерного флоу. Код здесь один на всю ситуацию «сессия выдана,
+    /// но потеряна», чтобы вызывающий скрипт не разбирал два кода для одного исхода.
     /// </exception>
     public static async Task<FederatedTokenResult> ReloginAsync(
         string profileName,
@@ -162,8 +166,12 @@ public static class FederatedReloginService
                 {
                     if (!fresh.Profiles.TryGetValue(profileName, out var current))
                     {
+                        // ConfigError по той же причине, что и у проверки идентичности ниже:
+                        // профиль удалили параллельным запуском yt, аргументы команды тут ни
+                        // при чём. Обе половины одной ситуации («сессия выдана, но сохранить
+                        // её некуда») обязаны давать вызывающему один код.
                         throw new TrackerException(
-                            ErrorCode.InvalidArgs,
+                            ErrorCode.ConfigError,
                             $"Profile '{profileName}' disappeared from the configuration during re-login.");
                     }
 
@@ -175,12 +183,12 @@ public static class FederatedReloginService
                     if (current.Auth.Type != AuthType.Federated
                         || !string.Equals(current.Auth.FederationId, auth.FederationId, StringComparison.Ordinal))
                     {
+                        // ConfigError — по той же причине, что и у проверки выше.
                         throw new TrackerException(
-                            ErrorCode.InvalidArgs,
+                            ErrorCode.ConfigError,
                             $"Profile '{profileName}' changed during re-login "
                             + $"(expected a federated profile with federation_id='{auth.FederationId}', "
-                            + $"found type={current.Auth.Type} with federation_id='{current.Auth.FederationId}'). "
-                            + "The freshly issued session was NOT saved; re-run the login if it is still needed.");
+                            + $"found type={current.Auth.Type} with federation_id='{current.Auth.FederationId}').");
                     }
 
                     var profiles = new Dictionary<string, Profile>(fresh.Profiles)

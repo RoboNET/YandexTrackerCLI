@@ -315,7 +315,10 @@ public sealed class AuthReloginTests
         }
 
         await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.InvalidArgs);
+        // ConfigError, а не InvalidArgs: с аргументами команды всё в порядке, это конфликт
+        // с параллельной записью, и для вызывающего это тот же исход «сессия выдана, но не
+        // сохранена», что и отказ файловой записи.
+        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.ConfigError);
         await Assert.That(caught.Message).Contains("changed during re-login");
 
         // Свежие креденшелы на диске нетронуты — перелогин не записал поверх них ничего.
@@ -353,7 +356,7 @@ public sealed class AuthReloginTests
         }
 
         await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.InvalidArgs);
+        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.ConfigError);
 
         using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
         var auth = saved.RootElement.GetProperty("profiles").GetProperty("fed").GetProperty("auth");

@@ -33,7 +33,9 @@ internal static class FileStore
     /// в котором два процесса держат локи на разных inode'ах под одним именем.
     /// </returns>
     /// <exception cref="TrackerException">
-    /// <see cref="ErrorCode.ConfigError"/> — лок не удалось взять за отведённое время.
+    /// <see cref="ErrorCode.ConfigError"/> — лок не удалось взять: либо истёк
+    /// <paramref name="timeout"/>, либо lock-файл не открылся по причине, которую повтор
+    /// не лечит (нет прав, нет каталога, слишком длинный путь).
     /// </exception>
     /// <remarks>
     /// <para>
@@ -57,7 +59,6 @@ internal static class FileStore
             EnsureDirectory(lockPath);
 
             var deadline = DateTime.UtcNow + timeout;
-            IOException? last = null;
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
@@ -68,26 +69,26 @@ internal static class FileStore
                 catch (IOException ex) when (IsRetriable(ex))
                 {
                     // Лок держит другой процесс (или другой FileStream этого же процесса).
-                    last = ex;
                     if (DateTime.UtcNow >= deadline)
                     {
                         throw new TrackerException(
                             ErrorCode.ConfigError,
                             $"Timed out after {timeout.TotalSeconds:0.#}s waiting for the lock on '{lockPath}'. "
-                            + "Another yt process is writing to this file; retry once it finishes. "
+                            + "The lock is held by another yt process. "
                             + $"Last error while acquiring the lock: {ex.Message}",
-                            inner: last);
+                            inner: ex);
                     }
 
                     await Task.Delay(LockPollInterval, ct);
                 }
             }
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Каталог конфига только для чтения (или сам lock-файл чужой). Команды ловят
-            // только TrackerException, так что без обёртки пользователь получил бы
-            // необработанное исключение со стектрейсом вместо структурной ошибки.
+            // Каталог конфига только для чтения, сам lock-файл чужой, каталога нет, путь
+            // слишком длинный — всё, что не лечится повтором. Команды ловят только
+            // TrackerException, так что без обёртки пользователь получил бы необработанное
+            // исключение со стектрейсом вместо структурной ошибки.
             throw new TrackerException(
                 ErrorCode.ConfigError,
                 $"Cannot create or open the lock file '{lockPath}': {ex.Message}",
@@ -101,11 +102,19 @@ internal static class FileStore
     /// <param name="ex">Исключение, полученное при открытии lock-файла.</param>
     /// <returns><c>true</c>, если попытку имеет смысл повторить.</returns>
     /// <remarks>
+    /// <para>
     /// Крутить весь таймаут на удалённом каталоге конфига или на слишком длинном пути
     /// бессмысленно, а диагноз «другой процесс yt пишет в файл» там ещё и ложный. Полный
     /// <see cref="IOException"/> (кончившееся место, ошибка сетевой ФС) от нарушения
     /// совместного доступа переносимо не отличается, поэтому такие случаи всё же
     /// повторяются — но исходное исключение прикладывается к ошибке таймаута.
+    /// </para>
+    /// <para>
+    /// Решается здесь только <b>повторять ли</b>. Что делать с неповторяемым отказом —
+    /// вопрос отдельный: наружу он всё равно обязан выйти как
+    /// <see cref="ErrorCode.ConfigError"/>, иначе команда, ловящая только
+    /// <see cref="TrackerException"/>, отдаст пользователю стектрейс.
+    /// </para>
     /// </remarks>
     private static bool IsRetriable(IOException ex) =>
         ex is not (DirectoryNotFoundException or FileNotFoundException or PathTooLongException);
@@ -117,6 +126,10 @@ internal static class FileStore
     /// <param name="path">Целевой путь.</param>
     /// <param name="write">Колбэк, пишущий содержимое в поток временного файла.</param>
     /// <param name="ct">Токен отмены.</param>
+    /// <exception cref="TrackerException">
+    /// <see cref="ErrorCode.ConfigError"/> — файловый отказ записи (нет прав, нет места,
+    /// целевой путь занят каталогом).
+    /// </exception>
     /// <remarks>
     /// <para>
     /// Имя временного файла уникально для каждой записи: фиксированное <c>.tmp</c> означало бы,
@@ -130,6 +143,13 @@ internal static class FileStore
     /// подстраховывает авто-fsync при rename, APFS и прочие такой гарантии не дают. Цена
     /// пропуска — авария сразу после переименования оставляет пустой файл на месте уже
     /// отвязанного старого inode, то есть потерю креденшелов всех профилей разом.
+    /// </para>
+    /// <para>
+    /// Долговечность самого переименования этим не покупается: на POSIX запись каталога
+    /// становится устойчивой только после <c>fsync</c> на дескрипторе каталога, а его .NET
+    /// не отдаёт. Гарантируется лишь то, что содержимое нового файла на диске раньше, чем
+    /// на него начинает указывать имя; авария сразу после <see cref="File.Move(string, string, bool)"/>
+    /// может потерять переименование, и на месте останется прежний валидный файл.
     /// </para>
     /// </remarks>
     public static async Task WriteAtomic(string path, Func<Stream, CancellationToken, Task> write, CancellationToken ct)
@@ -157,15 +177,16 @@ internal static class FileStore
 
             File.Move(tmp, path, overwrite: true);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             if (tmp is not null)
             {
                 TryDelete(tmp);
             }
 
-            // Каталог только для чтения либо файл принадлежит другому пользователю: наружу
-            // это должно выйти как config_error, а не как необработанное исключение.
+            // Каталог только для чтения, файл принадлежит другому пользователю, кончилось
+            // место, целевой путь занят каталогом: наружу это должно выйти как config_error,
+            // а не как необработанное исключение.
             throw new TrackerException(
                 ErrorCode.ConfigError,
                 $"Cannot write '{path}': {ex.Message}",

@@ -219,6 +219,9 @@ public sealed class ConfigStoreTests
     /// <summary>
     /// Неудачная запись не должна оставлять временный файл рядом с конфигом: раньше он
     /// накапливался бы под одним именем, теперь имена уникальны — и мусор копился бы тем быстрее.
+    /// Отказ при этом обязан выйти как <see cref="ErrorCode.ConfigError"/>: команды ловят
+    /// только <see cref="TrackerException"/>, сырой <see cref="IOException"/> дошёл бы до
+    /// пользователя стектрейсом.
     /// </summary>
     [Test]
     public async Task SaveAsync_WhenCommitFails_RemovesTempFile()
@@ -230,26 +233,10 @@ public sealed class ConfigStoreTests
         Directory.CreateDirectory(path);
         var store = new ConfigStore(path);
 
-        var failed = false;
-        try
-        {
-            await store.SaveAsync(new ConfigFile("a", new() { ["a"] = Oauth("t") }));
-        }
-        catch (IOException)
-        {
-            failed = true;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            failed = true;
-        }
-        catch (TrackerException ex) when (ex.Code == ErrorCode.ConfigError)
-        {
-            // Отказ по правам заворачивается в config_error — команды ловят только его.
-            failed = true;
-        }
+        var ex = await Assert.ThrowsAsync<TrackerException>(
+            async () => await store.SaveAsync(new ConfigFile("a", new() { ["a"] = Oauth("t") })));
 
-        await Assert.That(failed).IsTrue();
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
         await Assert.That(Directory.GetFiles(dir, "*.tmp")).IsEmpty();
     }
 
