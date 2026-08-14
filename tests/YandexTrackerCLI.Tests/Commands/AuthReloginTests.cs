@@ -6,6 +6,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using TUnit.Core;
+using Core.Api.Errors;
 using Http;
 using YandexTrackerCLI.Auth.Federated;
 using YandexTrackerCLI.Commands.Auth;
@@ -280,6 +281,84 @@ public sealed class AuthReloginTests
 
         using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
         await Assert.That(saved.RootElement.GetProperty("default_profile").GetString()).IsEqualTo("other");
+    }
+
+    /// <summary>
+    /// Пока идёт браузерный флоу, профиль могли пересоздать с другим типом
+    /// (<c>yt auth login --type oauth --profile fed</c> из параллельной сессии). Перелогин
+    /// проверяет тип и <c>federation_id</c> по свежему снимку и отказывается писать: иначе
+    /// он молча затёр бы свежие OAuth-креденшелы федеративными.
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_WhenProfileRecreatedWithOtherAuthType_Fails_AndKeepsFreshCredentials()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token"));
+
+        // federation_id оставлен прежним намеренно: тогда отказ держится именно на типе
+        // аутентификации, а не на попутно разошедшемся идентификаторе федерации.
+        const string recreated =
+            """
+            {"default_profile":"fed","profiles":{
+              "fed":{"org_type":"cloud","org_id":"o1","read_only":false,
+                "auth":{"type":"oauth","token":"fresh-oauth-token","federation_id":"fed-1"}}}}
+            """;
+
+        TrackerException? caught = null;
+        try
+        {
+            await RunInlineRelogin(() => File.WriteAllText(env.ConfigPath, recreated));
+        }
+        catch (TrackerException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.InvalidArgs);
+        await Assert.That(caught.Message).Contains("changed during re-login");
+
+        // Свежие креденшелы на диске нетронуты — перелогин не записал поверх них ничего.
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var auth = saved.RootElement.GetProperty("profiles").GetProperty("fed").GetProperty("auth");
+        await Assert.That(auth.GetProperty("type").GetString()).IsEqualTo("oauth");
+        await Assert.That(auth.GetProperty("token").GetString()).IsEqualTo("fresh-oauth-token");
+    }
+
+    /// <summary>
+    /// Тот же профиль остался federated, но за время флоу его перевели в другую федерацию.
+    /// Токены, выпущенные старой федерацией, класть в него нельзя.
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_WhenFederationIdChanged_Fails()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token"));
+
+        const string reFederated =
+            """
+            {"default_profile":"fed","profiles":{
+              "fed":{"org_type":"cloud","org_id":"o1","read_only":false,
+                "auth":{"type":"federated","token":"t","refresh_token":"rt","federation_id":"fed-2"}}}}
+            """;
+
+        TrackerException? caught = null;
+        try
+        {
+            await RunInlineRelogin(() => File.WriteAllText(env.ConfigPath, reFederated));
+        }
+        catch (TrackerException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.InvalidArgs);
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var auth = saved.RootElement.GetProperty("profiles").GetProperty("fed").GetProperty("auth");
+        await Assert.That(auth.GetProperty("federation_id").GetString()).IsEqualTo("fed-2");
+        await Assert.That(auth.GetProperty("token").GetString()).IsEqualTo("t");
     }
 
     [Test]

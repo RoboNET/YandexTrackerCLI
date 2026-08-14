@@ -25,13 +25,16 @@ public static class AuthLogoutCommand
             {
                 var store = new ConfigStore(ConfigStore.DefaultPath);
                 var explicitProfile = parseResult.GetValue(RootCommandBuilder.ProfileOption);
-                var name = explicitProfile ?? string.Empty;
 
-                await store.ModifyAsync(
+                // Имя резолвится по свежему снимку под локом (без --profile это
+                // default_profile, который мог смениться), и возвращается наружу результатом
+                // ModifyAsync. Через захваченную локальную оно держалось бы на негласном
+                // «mutate вызывается ровно один раз и без повторов» — контракте, который
+                // сломается при первой же попытке повторить запись.
+                var update = await store.ModifyAsync(
                     fresh =>
                     {
                         var target = explicitProfile ?? fresh.DefaultProfile;
-                        name = target;
 
                         if (!fresh.Profiles.TryGetValue(target, out var existing))
                         {
@@ -51,11 +54,11 @@ public static class AuthLogoutCommand
                         };
 
                         var profiles = new Dictionary<string, Profile>(fresh.Profiles) { [target] = cleared };
-                        return new ConfigFile(fresh.DefaultProfile, profiles);
+                        return new ConfigUpdate<string>(new ConfigFile(fresh.DefaultProfile, profiles), target);
                     },
-                    ct);
+                    ct: ct);
 
-                CommandOutput.WriteSingleField("logged_out", name);
+                CommandOutput.WriteSingleField("logged_out", update.Result);
                 return 0;
             }
             catch (TrackerException ex)

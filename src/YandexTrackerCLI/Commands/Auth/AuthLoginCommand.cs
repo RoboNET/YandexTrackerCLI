@@ -179,6 +179,12 @@ public static class AuthLoginCommand
                 var effectiveFormat = CommandFormatHelper.ResolveForCommand(parseResult);
                 var ui = InteractiveUIResolver.Resolve(effectiveFormat);
 
+                // Интерактивным считается вход, креденшелы которого стоили пользователю
+                // браузера: federated-флоу и oauth без --token. Только в этих случаях отказ
+                // на записи означает безвозвратную потерю, а не «повтори команду».
+                var interactiveAuth = type == "federated"
+                    || (type == "oauth" && string.IsNullOrWhiteSpace(token));
+
                 if (type == "oauth" && string.IsNullOrWhiteSpace(token))
                 {
                     token = await ResolveOAuthTokenInteractive(clientId, ui, ct);
@@ -211,28 +217,45 @@ public static class AuthLoginCommand
                 // Пересоздаётся при этом ровно один профиль: остальные и default_profile
                 // берутся из свежего снимка под локом — federated-флоу выше мог занять минуты,
                 // и снимок, прочитанный до него, откатил бы чужие правки.
-                await store.ModifyAsync(
-                    fresh =>
-                    {
-                        fresh.Profiles.TryGetValue(profileName, out var prevProfile);
-                        var profiles = new Dictionary<string, Profile>(fresh.Profiles)
+                try
+                {
+                    await store.ModifyAsync(
+                        fresh =>
                         {
-                            [profileName] = new Profile(
-                                orgType,
-                                orgId,
-                                ReadOnly: readOnlyFlag,
-                                auth,
-                                DefaultFormat: prevProfile?.DefaultFormat,
-                                AllowedQueues: null,
-                                AllowedWriteIssues: null,
-                                ExternalEffects: null),
-                        };
-                        var defaultName = string.IsNullOrWhiteSpace(fresh.DefaultProfile)
-                            ? profileName
-                            : fresh.DefaultProfile;
-                        return new ConfigFile(defaultName, profiles);
-                    },
-                    ct);
+                            fresh.Profiles.TryGetValue(profileName, out var prevProfile);
+                            var profiles = new Dictionary<string, Profile>(fresh.Profiles)
+                            {
+                                [profileName] = new Profile(
+                                    orgType,
+                                    orgId,
+                                    ReadOnly: readOnlyFlag,
+                                    auth,
+                                    DefaultFormat: prevProfile?.DefaultFormat,
+                                    AllowedQueues: null,
+                                    AllowedWriteIssues: null,
+                                    ExternalEffects: null),
+                            };
+                            var defaultName = string.IsNullOrWhiteSpace(fresh.DefaultProfile)
+                                ? profileName
+                                : fresh.DefaultProfile;
+                            return new ConfigFile(defaultName, profiles);
+                        },
+                        // После браузерного флоу креденшелы существуют только в памяти:
+                        // ждём лок заметно дольше общего дефолта, потому что цена отказа —
+                        // не «повтори команду», а заново пройденный вход.
+                        interactiveAuth ? ConfigStore.PostAuthLockTimeout : null,
+                        ct);
+                }
+                catch (TrackerException ex) when (interactiveAuth && ex.Code == ErrorCode.ConfigError)
+                {
+                    throw new TrackerException(
+                        ErrorCode.ConfigError,
+                        $"Login for profile '{profileName}' succeeded, but the credentials could NOT be saved: "
+                        + ex.Message
+                        + " The session obtained in the browser is lost; running the login again will require "
+                        + "the browser flow once more.",
+                        inner: ex);
+                }
 
                 if (auth.Type == AuthType.Federated)
                 {

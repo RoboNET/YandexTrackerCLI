@@ -243,9 +243,142 @@ public sealed class ConfigStoreTests
         {
             failed = true;
         }
+        catch (TrackerException ex) when (ex.Code == ErrorCode.ConfigError)
+        {
+            // Отказ по правам заворачивается в config_error — команды ловят только его.
+            failed = true;
+        }
 
         await Assert.That(failed).IsTrue();
         await Assert.That(Directory.GetFiles(dir, "*.tmp")).IsEmpty();
+    }
+
+    /// <summary>
+    /// Таймаут задаётся на вызов, а не только на весь store: путь после интерактивного
+    /// входа держит только что выданные креденшелы в памяти и обязан переждать чужую
+    /// запись, а не выбросить их по общему десятисекундному дефолту.
+    /// </summary>
+    [Test]
+    public async Task ModifyAsync_PerCallTimeout_OutwaitsHolder_BeyondStoreDefault()
+    {
+        var path = Path.Combine(CreateTempDir(), "config.json");
+        var store = new ConfigStore(path, lockTimeout: TimeSpan.FromMilliseconds(50));
+        await store.SaveAsync(new ConfigFile("a", new Dictionary<string, Profile>()));
+
+        var holder = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var release = Task.Run(async () =>
+        {
+            await Task.Delay(400);
+            holder.Dispose();
+        });
+
+        var written = await store.ModifyAsync(
+            fresh => new ConfigFile(fresh.DefaultProfile, new Dictionary<string, Profile>(fresh.Profiles)
+            {
+                ["late"] = Oauth("token-late"),
+            }),
+            lockTimeout: TimeSpan.FromSeconds(30));
+
+        await release;
+        await Assert.That(written.Profiles.ContainsKey("late")).IsTrue();
+        var cfg = await store.LoadAsync();
+        await Assert.That(cfg.Profiles["late"].Auth.Token).IsEqualTo("token-late");
+    }
+
+    /// <summary>
+    /// Значение, посчитанное по свежему снимку (например, разрешённое имя профиля),
+    /// возвращается результатом, а не утекает через захваченную локальную.
+    /// </summary>
+    [Test]
+    public async Task ModifyAsync_ReturnsValueComputedFromFreshSnapshot()
+    {
+        var path = Path.Combine(CreateTempDir(), "config.json");
+        var store = new ConfigStore(path);
+        await store.SaveAsync(new ConfigFile("a", new() { ["a"] = Oauth("token-a") }));
+
+        // Сторонняя правка ложится на диск после того, как «команда» уже стартовала.
+        await store.SaveAsync(new ConfigFile("b", new()
+        {
+            ["a"] = Oauth("token-a"),
+            ["b"] = Oauth("token-b"),
+        }));
+
+        var update = await store.ModifyAsync(fresh =>
+        {
+            var target = fresh.DefaultProfile;
+            var profiles = new Dictionary<string, Profile>(fresh.Profiles) { [target] = Oauth("cleared") };
+            return new ConfigUpdate<string>(new ConfigFile(fresh.DefaultProfile, profiles), target);
+        });
+
+        await Assert.That(update.Result).IsEqualTo("b");
+        await Assert.That(update.Config.Profiles["b"].Auth.Token).IsEqualTo("cleared");
+    }
+
+    /// <summary>
+    /// Каталог конфига только для чтения: наружу это обязано выйти структурной ошибкой
+    /// <c>config_error</c>, а не необработанным <see cref="UnauthorizedAccessException"/> —
+    /// команды ловят только <see cref="TrackerException"/>.
+    /// </summary>
+    [Test]
+    public async Task ModifyAsync_WhenDirectoryIsReadOnly_FailsWithConfigError()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return; // Права на каталог здесь моделируются POSIX-режимом.
+        }
+
+        var dir = CreateTempDir();
+        var path = Path.Combine(dir, "config.json");
+        var store = new ConfigStore(path, lockTimeout: TimeSpan.FromMilliseconds(200));
+        File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+            if (CanStillWrite(dir))
+            {
+                return; // root игнорирует биты прав — проверять нечего.
+            }
+
+            TrackerException? caught = null;
+            try
+            {
+                await store.ModifyAsync(fresh => fresh);
+            }
+            catch (TrackerException ex)
+            {
+                caught = ex;
+            }
+
+            await Assert.That(caught).IsNotNull();
+            await Assert.That(caught!.Code).IsEqualTo(ErrorCode.ConfigError);
+        }
+        finally
+        {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    /// <summary>
+    /// Проверяет, что биты прав каталога действительно запрещают запись текущему процессу
+    /// (под root они не запрещают ничего).
+    /// </summary>
+    private static bool CanStillWrite(string dir)
+    {
+        var probe = Path.Combine(dir, "probe-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            File.WriteAllText(probe, "x");
+            File.Delete(probe);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
     }
 
     private static Profile Oauth(string token) =>

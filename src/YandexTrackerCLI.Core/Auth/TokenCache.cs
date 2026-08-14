@@ -114,7 +114,7 @@ public sealed class TokenCache
         {
             return new Dictionary<string, TokenCacheEntry>();
         }
-        await using var fs = File.OpenRead(_path);
+        await using var fs = FileStore.OpenSharedRead(_path);
         return await JsonSerializer.DeserializeAsync(fs, TrackerJsonContext.Default.DictionaryStringTokenCacheEntry, ct)
             ?? new Dictionary<string, TokenCacheEntry>();
     }

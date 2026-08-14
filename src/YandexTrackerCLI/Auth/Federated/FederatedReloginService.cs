@@ -155,23 +155,56 @@ public static class FederatedReloginService
         // tightened policy, a switched default profile, another profile's tokens) survives.
         // The lock covers only this read-modify-write: holding it across the browser flow
         // would block every other `yt` invocation for the duration of the login.
-        await store.ModifyAsync(
-            fresh =>
-            {
-                if (!fresh.Profiles.TryGetValue(profileName, out var current))
+        try
+        {
+            await store.ModifyAsync(
+                fresh =>
                 {
-                    throw new TrackerException(
-                        ErrorCode.InvalidArgs,
-                        $"Profile '{profileName}' disappeared from the configuration during re-login.");
-                }
+                    if (!fresh.Profiles.TryGetValue(profileName, out var current))
+                    {
+                        throw new TrackerException(
+                            ErrorCode.InvalidArgs,
+                            $"Profile '{profileName}' disappeared from the configuration during re-login.");
+                    }
 
-                var profiles = new Dictionary<string, Profile>(fresh.Profiles)
-                {
-                    [profileName] = current with { Auth = newAuth },
-                };
-                return new ConfigFile(fresh.DefaultProfile, profiles);
-            },
-            ct);
+                    // Идентичность профиля перепроверяется по свежему снимку, а не по тому,
+                    // с которого начинался флоу. Если профиль за эти минуты пересоздали
+                    // (`yt auth login --type oauth --profile <тот же>` из параллельной
+                    // сессии), `current with { Auth = ... }` затёр бы свежие креденшелы
+                    // федеративными — та же потеря обновления, только на креденшелах.
+                    if (current.Auth.Type != AuthType.Federated
+                        || !string.Equals(current.Auth.FederationId, auth.FederationId, StringComparison.Ordinal))
+                    {
+                        throw new TrackerException(
+                            ErrorCode.InvalidArgs,
+                            $"Profile '{profileName}' changed during re-login "
+                            + $"(expected a federated profile with federation_id='{auth.FederationId}', "
+                            + $"found type={current.Auth.Type} with federation_id='{current.Auth.FederationId}'). "
+                            + "The freshly issued session was NOT saved; re-run the login if it is still needed.");
+                    }
+
+                    var profiles = new Dictionary<string, Profile>(fresh.Profiles)
+                    {
+                        [profileName] = current with { Auth = newAuth },
+                    };
+                    return new ConfigFile(fresh.DefaultProfile, profiles);
+                },
+                // Дошли сюда — значит сервер уже провернул токены: старый refresh мёртв,
+                // новый есть только в памяти. Отказ по короткому общему таймауту здесь
+                // выбросил бы только что выданную сессию.
+                ConfigStore.PostAuthLockTimeout,
+                ct);
+        }
+        catch (TrackerException ex) when (ex.Code == ErrorCode.ConfigError)
+        {
+            throw new TrackerException(
+                ErrorCode.ConfigError,
+                $"Re-login for profile '{profileName}' succeeded, but the new session could NOT be saved: "
+                + ex.Message
+                + " The tokens are lost and the ones left on disk are the expired ones that triggered this "
+                + "re-login; the next attempt will need the browser flow again.",
+                inner: ex);
+        }
 
         return result;
     }
