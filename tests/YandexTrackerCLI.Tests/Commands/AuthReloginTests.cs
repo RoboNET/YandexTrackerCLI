@@ -22,9 +22,17 @@ public sealed class AuthReloginTests
     {
         public string? Url { get; private set; }
 
+        /// <summary>
+        /// Хук, выполняемый в момент открытия браузера — то есть строго внутри окна
+        /// read-modify-write перелогина (конфиг уже прочитан, но ещё не записан).
+        /// Тесты используют его, чтобы сымитировать правку конфига другим процессом.
+        /// </summary>
+        public Action? OnOpen { get; init; }
+
         public Task OpenAsync(string url, CancellationToken ct)
         {
             Url = url;
+            OnOpen?.Invoke();
             return Task.CompletedTask;
         }
     }
@@ -206,6 +214,74 @@ public sealed class AuthReloginTests
         await Assert.That(profile.GetProperty("external_effects").GetBoolean()).IsFalse();
     }
 
+    /// <summary>
+    /// Браузерный flow длится минуты, и всё это время перелогин держит в памяти снимок
+    /// конфига, прочитанный до его начала. Правка соседнего профиля, легшая на диск внутри
+    /// этого окна, обязана пережить сохранение — иначе перелогин молча откатывает чужие
+    /// креденшелы к состоянию «минуты назад».
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_PreservesConcurrentEdit_ToOtherProfile()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token"));
+
+        await RunInlineRelogin(() =>
+            File.WriteAllText(
+                env.ConfigPath,
+                BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token-rotated")));
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var profiles = saved.RootElement.GetProperty("profiles");
+        await Assert.That(profiles.GetProperty("other").GetProperty("auth").GetProperty("token").GetString())
+            .IsEqualTo("other-token-rotated");
+        await Assert.That(profiles.GetProperty("fed").GetProperty("auth").GetProperty("token").GetString())
+            .IsEqualTo("iam-inline-new");
+    }
+
+    /// <summary>
+    /// Ужесточение политики профиля (<c>read_only</c>, <c>external_effects</c>), выполненное
+    /// внутри окна перелогина, обязано пережить сохранение. Направление отката тут худшее из
+    /// возможных: пользователь сузил права, а профиль вернулся бы к более широким — причём
+    /// автоматический перелогин случается сам, без участия пользователя.
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_PreservesConcurrentPolicyTightening()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token"));
+
+        await RunInlineRelogin(() =>
+            File.WriteAllText(
+                env.ConfigPath,
+                BaseConfig("fed", readOnly: true, externalEffects: "false", otherToken: "other-token")));
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var fed = saved.RootElement.GetProperty("profiles").GetProperty("fed");
+        await Assert.That(fed.GetProperty("read_only").GetBoolean()).IsTrue();
+        await Assert.That(fed.GetProperty("external_effects").GetBoolean()).IsFalse();
+        await Assert.That(fed.GetProperty("auth").GetProperty("token").GetString()).IsEqualTo("iam-inline-new");
+    }
+
+    /// <summary>
+    /// Переключение default-профиля (<c>yt config profile</c>) внутри окна перелогина
+    /// не должно откатываться: перелогин трогает только <c>auth</c> своего профиля.
+    /// </summary>
+    [Test]
+    public async Task InlineRelogin_PreservesConcurrentDefaultProfileSwitch()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(BaseConfig("fed", readOnly: false, externalEffects: "null", otherToken: "other-token"));
+
+        await RunInlineRelogin(() =>
+            File.WriteAllText(
+                env.ConfigPath,
+                BaseConfig("other", readOnly: false, externalEffects: "null", otherToken: "other-token")));
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        await Assert.That(saved.RootElement.GetProperty("default_profile").GetString()).IsEqualTo("other");
+    }
+
     [Test]
     public async Task Relogin_OAuthProfile_Returns_InvalidArgs()
     {
@@ -233,5 +309,66 @@ public sealed class AuthReloginTests
         using var werr = JsonDocument.Parse(er.ToString());
         await Assert.That(werr.RootElement.GetProperty("error").GetProperty("code").GetString())
             .IsEqualTo("invalid_args");
+    }
+
+    /// <summary>
+    /// Конфиг из двух профилей — federated <c>fed</c> и oauth <c>other</c> — с параметрами,
+    /// которые тесты гонок меняют «сторонним процессом» внутри окна перелогина.
+    /// </summary>
+    private static string BaseConfig(string defaultProfile, bool readOnly, string externalEffects, string otherToken) =>
+        $$"""
+        {"default_profile":"{{defaultProfile}}","profiles":{
+          "other":{"org_type":"yandex360","org_id":"other-org","read_only":false,
+            "auth":{"type":"oauth","token":"{{otherToken}}"}
+          },
+          "fed":{"org_type":"cloud","org_id":"o1","read_only":{{(readOnly ? "true" : "false")}},
+            "external_effects":{{externalEffects}},
+            "auth":{"type":"federated","token":"old-access","refresh_token":"rt-old",
+              "federation_id":"fed-1","dpop_key_path":null,"access_token_expires_at":"2020-01-01T00:00:00.0000000+00:00"}
+          }
+         }
+        }
+        """;
+
+    /// <summary>
+    /// Прогоняет inline-перелогин профиля <c>fed</c> с фейковым браузером и фейковым
+    /// token-endpoint. <paramref name="onBrowserOpen"/> выполняется в момент открытия
+    /// браузера — то есть внутри окна между чтением и записью конфига.
+    /// </summary>
+    private static async Task RunInlineRelogin(Action onBrowserOpen)
+    {
+        var browser = new CapturingBrowser { OnOpen = onBrowserOpen };
+        var callbackTask = Task.Run(async () =>
+        {
+            while (browser.Url is null)
+            {
+                await Task.Delay(10);
+            }
+
+            var uri = new Uri(browser.Url!);
+            var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+            using var http = new HttpClient();
+            await http.GetAsync($"{query["redirect_uri"]}?code=FAKE_CODE&state={query["state"]}");
+        });
+
+        var fakeHandler = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"access_token":"iam-inline-new","refresh_token":"rt-new","expires_in":43199}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+
+        using var exchangeHttp = new HttpClient(fakeHandler);
+        await FederatedReloginService.ReloginAsync(
+            "fed",
+            browser,
+            NoopInteractiveUI.Instance,
+            exchangeHttp,
+            wireSink: null,
+            timeout: TimeSpan.FromSeconds(10),
+            ct: CancellationToken.None);
+
+        await callbackTask;
     }
 }

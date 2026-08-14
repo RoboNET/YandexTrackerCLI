@@ -45,21 +45,31 @@ public static class ConfigSetCommand
                 ConfigKeyAccess.EnsureAllowed(key);
 
                 var store = new ConfigStore(ConfigStore.DefaultPath);
-                var cfg = await store.LoadAsync(ct);
-                var name = parseResult.GetValue(RootCommandBuilder.ProfileOption) ?? cfg.DefaultProfile;
+                var explicitProfile = parseResult.GetValue(RootCommandBuilder.ProfileOption);
 
-                if (!cfg.Profiles.TryGetValue(name, out var profile))
-                {
-                    throw new TrackerException(ErrorCode.ConfigError, $"Profile '{name}' not found.");
-                }
+                await store.ModifyAsync(
+                    fresh =>
+                    {
+                        // Профиль резолвится по тому же снимку, который будет записан: имя,
+                        // взятое из одного чтения и применённое к другому, снова открывало бы
+                        // окно гонки с `yt config profile`.
+                        var target = explicitProfile ?? fresh.DefaultProfile;
+                        if (!fresh.Profiles.TryGetValue(target, out var profile))
+                        {
+                            throw new TrackerException(ErrorCode.ConfigError, $"Profile '{target}' not found.");
+                        }
 
-                var updated = ConfigKeyAccess.WriteValue(profile, key, value);
-                // Политики профиля можно только ужесточить: снятие идёт через пересоздание
-                // профиля (`yt auth login`), а не через ту же команду, которой располагает
-                // ограничиваемый вызывающий.
-                ConfigPolicyGuard.EnsureNotWeakened(profile, updated, name);
-                var profiles = new Dictionary<string, Profile>(cfg.Profiles) { [name] = updated };
-                await store.SaveAsync(new ConfigFile(cfg.DefaultProfile, profiles), ct);
+                        var updated = ConfigKeyAccess.WriteValue(profile, key, value);
+                        // Политики профиля можно только ужесточить: снятие идёт через пересоздание
+                        // профиля (`yt auth login`), а не через ту же команду, которой располагает
+                        // ограничиваемый вызывающий. Сравнение идёт со свежим снимком с диска —
+                        // иначе ужесточение, пришедшее из параллельного запуска, было бы
+                        // невидимо для проверки и молча откатилось бы этой записью.
+                        ConfigPolicyGuard.EnsureNotWeakened(profile, updated, target);
+                        var profiles = new Dictionary<string, Profile>(fresh.Profiles) { [target] = updated };
+                        return new ConfigFile(fresh.DefaultProfile, profiles);
+                    },
+                    ct);
 
                 CommandOutput.WriteSingleField("updated", key);
                 return 0;

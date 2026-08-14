@@ -149,11 +149,29 @@ public static class FederatedReloginService
             DpopKeyPath: keyPath,
             AccessTokenExpiresAt: expiresAtIso);
 
-        var profiles = new Dictionary<string, Profile>(cfg.Profiles)
-        {
-            [profileName] = profile with { Auth = newAuth },
-        };
-        await store.SaveAsync(new ConfigFile(cfg.DefaultProfile, profiles), ct);
+        // The snapshot read above is minutes old by now — the browser flow ran in between —
+        // so it must not reach the disk. ModifyAsync re-reads the file under the lock and the
+        // update is applied to that fresh copy; anything another `yt` wrote meanwhile (a
+        // tightened policy, a switched default profile, another profile's tokens) survives.
+        // The lock covers only this read-modify-write: holding it across the browser flow
+        // would block every other `yt` invocation for the duration of the login.
+        await store.ModifyAsync(
+            fresh =>
+            {
+                if (!fresh.Profiles.TryGetValue(profileName, out var current))
+                {
+                    throw new TrackerException(
+                        ErrorCode.InvalidArgs,
+                        $"Profile '{profileName}' disappeared from the configuration during re-login.");
+                }
+
+                var profiles = new Dictionary<string, Profile>(fresh.Profiles)
+                {
+                    [profileName] = current with { Auth = newAuth },
+                };
+                return new ConfigFile(fresh.DefaultProfile, profiles);
+            },
+            ct);
 
         return result;
     }

@@ -202,28 +202,37 @@ public static class AuthLoginCommand
                 };
 
                 var store = new ConfigStore(ConfigStore.DefaultPath);
-                var cfg = await store.LoadAsync(ct);
                 // Login пересоздаёт профиль из переданных креденшелов: политики
                 // (read_only / allowed_queues / allowed_write_issues) берутся ТОЛЬКО из флагов
                 // текущего вызова и потому сбрасываются. Это и есть путь сброса политики,
                 // на который ссылается отказ `yt config set` — он доступен лишь тому, у кого
                 // есть сами креденшелы (config get их маскирует).
                 // Переносится только default_format: настройка вывода, не граница доступа.
-                cfg.Profiles.TryGetValue(profileName, out var prevProfile);
-                var profiles = new Dictionary<string, Profile>(cfg.Profiles)
-                {
-                    [profileName] = new Profile(
-                        orgType,
-                        orgId,
-                        ReadOnly: readOnlyFlag,
-                        auth,
-                        DefaultFormat: prevProfile?.DefaultFormat,
-                        AllowedQueues: null,
-                        AllowedWriteIssues: null,
-                        ExternalEffects: null),
-                };
-                var defaultName = string.IsNullOrWhiteSpace(cfg.DefaultProfile) ? profileName : cfg.DefaultProfile;
-                await store.SaveAsync(new ConfigFile(defaultName, profiles), ct);
+                // Пересоздаётся при этом ровно один профиль: остальные и default_profile
+                // берутся из свежего снимка под локом — federated-флоу выше мог занять минуты,
+                // и снимок, прочитанный до него, откатил бы чужие правки.
+                await store.ModifyAsync(
+                    fresh =>
+                    {
+                        fresh.Profiles.TryGetValue(profileName, out var prevProfile);
+                        var profiles = new Dictionary<string, Profile>(fresh.Profiles)
+                        {
+                            [profileName] = new Profile(
+                                orgType,
+                                orgId,
+                                ReadOnly: readOnlyFlag,
+                                auth,
+                                DefaultFormat: prevProfile?.DefaultFormat,
+                                AllowedQueues: null,
+                                AllowedWriteIssues: null,
+                                ExternalEffects: null),
+                        };
+                        var defaultName = string.IsNullOrWhiteSpace(fresh.DefaultProfile)
+                            ? profileName
+                            : fresh.DefaultProfile;
+                        return new ConfigFile(defaultName, profiles);
+                    },
+                    ct);
 
                 if (auth.Type == AuthType.Federated)
                 {
