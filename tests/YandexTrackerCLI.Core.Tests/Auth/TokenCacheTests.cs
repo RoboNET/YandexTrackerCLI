@@ -2,6 +2,7 @@ namespace YandexTrackerCLI.Core.Tests.Auth;
 
 using System.Runtime.InteropServices;
 using TUnit.Core;
+using YandexTrackerCLI.Core.Api.Errors;
 using YandexTrackerCLI.Core.Auth;
 
 public sealed class TokenCacheTests
@@ -69,6 +70,56 @@ public sealed class TokenCacheTests
 
         await Assert.That(a!.Token).IsEqualTo("tok-a-updated");
         await Assert.That(b!.Token).IsEqualTo("tok-b");
+    }
+
+    /// <summary>
+    /// Записи в кэш идут при каждом обновлении токена, поэтому два <c>yt</c>, пишущих
+    /// одновременно, — не теоретический случай. Внутрипроцессный семафор их не разводит:
+    /// разводит файловый лок, и ни одна запись не должна потеряться.
+    /// </summary>
+    [Test]
+    public async Task SetAsync_ConcurrentWritersAcrossInstances_LoseNoEntry()
+    {
+        var path = TempPath();
+        var now = DateTimeOffset.UtcNow;
+
+        const int writers = 8;
+        await Task.WhenAll(Enumerable.Range(0, writers).Select(i => Task.Run(async () =>
+        {
+            // Свой экземпляр = свой файловый дескриптор лока, как у отдельного процесса.
+            var cache = new TokenCache(path);
+            await cache.SetAsync($"k{i}", $"tok-{i}", now.AddHours(1));
+        })));
+
+        var reader = new TokenCache(path);
+        for (var i = 0; i < writers; i++)
+        {
+            var entry = await reader.GetAsync($"k{i}", evaluatedAt: now);
+            await Assert.That(entry!.Token).IsEqualTo($"tok-{i}");
+        }
+    }
+
+    [Test]
+    public async Task SetAsync_WhenLockIsHeld_FailsWithConfigError_InsteadOfHanging()
+    {
+        var path = TempPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var cache = new TokenCache(path, lockTimeout: TimeSpan.FromMilliseconds(200));
+
+        using var holder = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+        TrackerException? caught = null;
+        try
+        {
+            await cache.SetAsync("k", "t", DateTimeOffset.UtcNow.AddHours(1));
+        }
+        catch (TrackerException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Code).IsEqualTo(ErrorCode.ConfigError);
     }
 
     private static string TempPath() =>

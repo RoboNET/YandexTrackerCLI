@@ -24,30 +24,41 @@ public static class AuthLogoutCommand
             try
             {
                 var store = new ConfigStore(ConfigStore.DefaultPath);
-                var cfg = await store.LoadAsync(ct);
-                var name = parseResult.GetValue(RootCommandBuilder.ProfileOption) ?? cfg.DefaultProfile;
+                var explicitProfile = parseResult.GetValue(RootCommandBuilder.ProfileOption);
 
-                if (!cfg.Profiles.TryGetValue(name, out var existing))
-                {
-                    throw new TrackerException(ErrorCode.ConfigError, $"Profile '{name}' not found.");
-                }
+                // Имя резолвится по свежему снимку под локом (без --profile это
+                // default_profile, который мог смениться), и возвращается наружу результатом
+                // ModifyAsync. Через захваченную локальную оно держалось бы на негласном
+                // «mutate вызывается ровно один раз и без повторов» — контракте, который
+                // сломается при первой же попытке повторить запись.
+                var update = await store.ModifyAsync(
+                    fresh =>
+                    {
+                        var target = explicitProfile ?? fresh.DefaultProfile;
 
-                // Оставляем type/sa/key_id/path и default_format, чистим Token и PrivateKeyPem.
-                var cleared = existing with
-                {
-                    Auth = new AuthConfig(
-                        existing.Auth.Type,
-                        Token: null,
-                        ServiceAccountId: existing.Auth.ServiceAccountId,
-                        KeyId: existing.Auth.KeyId,
-                        PrivateKeyPath: existing.Auth.PrivateKeyPath,
-                        PrivateKeyPem: null),
-                };
+                        if (!fresh.Profiles.TryGetValue(target, out var existing))
+                        {
+                            throw new TrackerException(ErrorCode.ConfigError, $"Profile '{target}' not found.");
+                        }
 
-                var profiles = new Dictionary<string, Profile>(cfg.Profiles) { [name] = cleared };
-                await store.SaveAsync(new ConfigFile(cfg.DefaultProfile, profiles), ct);
+                        // Оставляем type/sa/key_id/path и default_format, чистим Token и PrivateKeyPem.
+                        var cleared = existing with
+                        {
+                            Auth = new AuthConfig(
+                                existing.Auth.Type,
+                                Token: null,
+                                ServiceAccountId: existing.Auth.ServiceAccountId,
+                                KeyId: existing.Auth.KeyId,
+                                PrivateKeyPath: existing.Auth.PrivateKeyPath,
+                                PrivateKeyPem: null),
+                        };
 
-                CommandOutput.WriteSingleField("logged_out", name);
+                        var profiles = new Dictionary<string, Profile>(fresh.Profiles) { [target] = cleared };
+                        return new ConfigUpdate<string>(new ConfigFile(fresh.DefaultProfile, profiles), target);
+                    },
+                    ct: ct);
+
+                CommandOutput.WriteSingleField("logged_out", update.Result);
                 return 0;
             }
             catch (TrackerException ex)

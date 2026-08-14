@@ -30,14 +30,20 @@ public static class ConfigProfileCommand
             {
                 var name = parseResult.GetValue(nameArg)!;
                 var store = new ConfigStore(ConfigStore.DefaultPath);
-                var cfg = await store.LoadAsync(ct);
 
-                if (!cfg.Profiles.ContainsKey(name))
-                {
-                    throw new TrackerException(ErrorCode.ConfigError, $"Profile '{name}' not found.");
-                }
+                // Меняется только default_profile; сами профили берутся из свежего снимка,
+                // прочитанного под локом, чтобы не откатить параллельную правку.
+                await store.ModifyAsync(
+                    fresh =>
+                    {
+                        if (!fresh.Profiles.ContainsKey(name))
+                        {
+                            throw new TrackerException(ErrorCode.ConfigError, $"Profile '{name}' not found.");
+                        }
 
-                await store.SaveAsync(new ConfigFile(name, cfg.Profiles), ct);
+                        return new ConfigFile(name, fresh.Profiles);
+                    },
+                    ct);
 
                 CommandOutput.WriteSingleField("default_profile", name);
                 return 0;
