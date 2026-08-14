@@ -152,7 +152,7 @@ public sealed class AuthReloginTests
             """
             {"default_profile":"fed","profiles":{
               "fed":{"org_type":"cloud","org_id":"o1","read_only":true,
-                "allowed_queues":["DEV","QA"],"allowed_write_issues":["DEV-1"],
+                "allowed_queues":["DEV","QA"],"allowed_write_issues":["DEV-1"],"external_effects":false,
                 "auth":{"type":"federated","token":"old-access","refresh_token":"rt-old",
                   "federation_id":"fed-1","dpop_key_path":null,"access_token_expires_at":"2020-01-01T00:00:00.0000000+00:00"}}}}
             """);
@@ -201,6 +201,9 @@ public sealed class AuthReloginTests
         var writeIssues = profile.GetProperty("allowed_write_issues")
             .EnumerateArray().Select(e => e.GetString()!).ToArray();
         await Assert.That(writeIssues).IsEquivalentTo(new[] { "DEV-1" });
+        // Позиционный конструктор Profile молча потерял бы это поле — а вместе с ним
+        // и запрет внешних эффектов, посреди сессии и без единого сообщения.
+        await Assert.That(profile.GetProperty("external_effects").GetBoolean()).IsFalse();
     }
 
     [Test]

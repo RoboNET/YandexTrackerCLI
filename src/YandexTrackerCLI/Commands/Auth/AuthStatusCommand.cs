@@ -10,7 +10,8 @@ using Output;
 /// Команда <c>yt auth status</c>: печатает JSON с активным профилем,
 /// типом организации, типом аутентификации и действующими политиками профиля
 /// (<c>read_only</c>, <c>allowed_queues</c>, <c>allowed_write_issues</c> вместе с источником
-/// последнего — <c>profile</c>, <c>env</c> или <c>profile+env</c>, если действует их пересечение).
+/// последнего — <c>profile</c>, <c>env</c> или <c>profile+env</c>, если действует их пересечение,
+/// и <c>external_effects</c>).
 /// </summary>
 public static class AuthStatusCommand
 {
@@ -70,6 +71,9 @@ public static class AuthStatusCommand
                         WriteIssuesSource.ProfileAndEnv => "profile+env",
                         _ => "profile",
                     });
+                    // true = внешние эффекты разрешены. Это не гарантия молчания: триггер,
+                    // уже настроенный на стороне очереди, сработает на любую правку задачи.
+                    w.WriteBoolean("external_effects", eff.ExternalEffectsAllowed);
                     w.WriteEndObject();
                 }
 

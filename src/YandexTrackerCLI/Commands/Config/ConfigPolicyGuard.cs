@@ -8,7 +8,8 @@ using YandexTrackerCLI.Core.Config;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Политики профиля (<c>read_only</c>, <c>allowed_queues</c>, <c>allowed_write_issues</c>) —
+/// Политики профиля (<c>read_only</c>, <c>allowed_queues</c>, <c>allowed_write_issues</c>,
+/// <c>external_effects</c>) —
 /// это граница, которую утилита держит против собственного вызывающего. Если бы её снимала
 /// та же утилита одной командой <c>yt config set read_only false</c>, границы бы не было:
 /// вызывающий сам формирует командную строку. Поэтому <c>config set</c> пропускает только
@@ -46,7 +47,8 @@ internal static class ConfigPolicyGuard
     /// <param name="profileName">Имя профиля (для сообщения об ошибке).</param>
     /// <exception cref="TrackerException">
     /// <see cref="ErrorCode.PolicyViolation"/>, если изменение снимает <c>read_only</c>
-    /// либо расширяет/снимает <c>allowed_queues</c>/<c>allowed_write_issues</c>.
+    /// или <c>external_effects</c>, либо расширяет/снимает
+    /// <c>allowed_queues</c>/<c>allowed_write_issues</c>.
     /// </exception>
     public static void EnsureNotWeakened(Profile before, Profile after, string profileName)
     {
@@ -55,6 +57,17 @@ internal static class ConfigPolicyGuard
             throw new TrackerException(
                 ErrorCode.PolicyViolation,
                 $"read_only is enabled on profile '{profileName}' and cannot be turned off "
+                + $"with `yt config set`. {ResetHint}");
+        }
+
+        // external_effects: false — такое же ужесточение, как read_only: true, и снимается
+        // тем же путём. null и true в профиле означают одно и то же («разрешено»), поэтому
+        // ослаблением считается любой уход от явного false.
+        if (before.ExternalEffects == false && after.ExternalEffects != false)
+        {
+            throw new TrackerException(
+                ErrorCode.PolicyViolation,
+                $"external_effects is disabled on profile '{profileName}' and cannot be re-enabled "
                 + $"with `yt config set`. {ResetHint}");
         }
 

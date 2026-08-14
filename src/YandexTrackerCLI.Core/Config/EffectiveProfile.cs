@@ -23,6 +23,12 @@ namespace YandexTrackerCLI.Core.Config;
 /// (профиль ограничения не нёс) или из их пересечения. Окружение может область записи
 /// только сузить, поэтому третий случай — всегда подмножество списка профиля.
 /// </param>
+/// <param name="ExternalEffectsAllowed">
+/// Действующая политика <c>external_effects</c>: <c>true</c> — внешние эффекты разрешены.
+/// Разрешены тогда и только тогда, когда их не запретил ни профиль
+/// (<see cref="Profile.ExternalEffects"/> = <c>false</c>), ни окружение
+/// (<c>YT_EXTERNAL_EFFECTS=0</c>). Окружение может ограничение только включить.
+/// </param>
 public sealed record EffectiveProfile(
     string Name,
     OrgType OrgType,
@@ -32,4 +38,5 @@ public sealed record EffectiveProfile(
     string? DefaultFormat = null,
     IReadOnlyList<string>? AllowedQueues = null,
     IReadOnlyList<string>? AllowedWriteIssues = null,
-    WriteIssuesSource AllowedWriteIssuesSource = WriteIssuesSource.Profile);
+    WriteIssuesSource AllowedWriteIssuesSource = WriteIssuesSource.Profile,
+    bool ExternalEffectsAllowed = true);
