@@ -157,6 +157,14 @@ public static class TrackerContextFactory
     internal static readonly AsyncLocal<IFederatedReloginHandler?> TestReloginHandlerOverride = new();
 
     /// <summary>
+    /// Test-only override of the sink that persists a rotated refresh token. When set, it
+    /// replaces <see cref="ProfileRefreshTokenSink"/> in the federated provider — used to
+    /// exercise the fail-soft path without making the real config file unwritable.
+    /// Scoped via <see cref="System.Threading.AsyncLocal{T}"/> to a single test's async context.
+    /// </summary>
+    internal static readonly AsyncLocal<IRefreshTokenSink?> TestRefreshTokenSinkOverride = new();
+
+    /// <summary>
     /// Builds a <see cref="TrackerContext"/> by loading the config, resolving the effective profile,
     /// instantiating the right <see cref="IAuthProvider"/> and composing the HTTP client pipeline.
     /// </summary>
@@ -332,7 +340,9 @@ public static class TrackerContextFactory
                             eff.Auth.RefreshToken!,
                             "yc.oauth.public-sdk",
                             relogin: reloginHandler,
-                            reloginCommandHint: reloginHint);
+                            reloginCommandHint: reloginHint,
+                            refreshTokenSink: TestRefreshTokenSinkOverride.Value
+                                ?? new ProfileRefreshTokenSink(eff.Name, eff.Auth.FederationId));
                         break;
                     }
 
@@ -487,6 +497,81 @@ public static class TrackerContextFactory
             rsa.Dispose();
             throw;
         }
+    }
+}
+
+/// <summary>
+/// Production <see cref="IRefreshTokenSink"/>: writes a rotated refresh token back into the
+/// active profile, leaving every other field — other profiles, the default-profile selection,
+/// the profile's policy and org settings, its access token and DPoP key path — untouched.
+/// </summary>
+/// <remarks>
+/// The write goes through <see cref="ConfigStore.ModifyAsync(Func{ConfigFile, ConfigFile}, CancellationToken)"/>,
+/// which re-reads the file under the cross-process lock, so a parallel <c>yt</c> editing an
+/// unrelated part of the config does not lose its update. What the lock cannot prevent is two
+/// processes refreshing the same profile at once — see the remarks on the caller in
+/// <c>FederatedTokenProvider</c>.
+/// </remarks>
+internal sealed class ProfileRefreshTokenSink : IRefreshTokenSink
+{
+    private readonly string _profileName;
+    private readonly string? _federationId;
+
+    /// <summary>
+    /// Initializes a new <see cref="ProfileRefreshTokenSink"/>.
+    /// </summary>
+    /// <param name="profileName">Profile whose refresh token is being rotated.</param>
+    /// <param name="federationId">
+    /// Federation id the in-memory token belongs to; re-checked against the fresh snapshot so
+    /// that a profile recreated meanwhile (different federation, or a switch to another auth
+    /// type) is not overwritten with a token that does not belong to it.
+    /// </param>
+    public ProfileRefreshTokenSink(string profileName, string? federationId)
+    {
+        _profileName = profileName;
+        _federationId = federationId;
+    }
+
+    /// <inheritdoc />
+    public async Task SaveRefreshToken(string refreshToken, CancellationToken ct)
+    {
+        var store = new ConfigStore(ConfigStore.DefaultPath);
+
+        // Default (short) lock timeout on purpose: this runs inside a user-facing request, and
+        // the caller treats failure as a warning. Waiting out a long-held lock here would stall
+        // the command for the benefit of a write it can live without.
+        await store.ModifyAsync(
+            fresh =>
+            {
+                if (!fresh.Profiles.TryGetValue(_profileName, out var current))
+                {
+                    throw new TrackerException(
+                        ErrorCode.ConfigError,
+                        $"Profile '{_profileName}' is no longer present in the configuration.");
+                }
+
+                if (current.Auth.Type != AuthType.Federated
+                    || !string.Equals(current.Auth.FederationId, _federationId, StringComparison.Ordinal))
+                {
+                    throw new TrackerException(
+                        ErrorCode.ConfigError,
+                        $"Profile '{_profileName}' changed while the token was being refreshed "
+                        + $"(expected federated/'{_federationId}', found {current.Auth.Type}/'{current.Auth.FederationId}').");
+                }
+
+                if (string.Equals(current.Auth.RefreshToken, refreshToken, StringComparison.Ordinal))
+                {
+                    // Someone already wrote exactly this; skip the rewrite.
+                    return fresh;
+                }
+
+                var profiles = new Dictionary<string, Core.Config.Profile>(fresh.Profiles)
+                {
+                    [_profileName] = current with { Auth = current.Auth with { RefreshToken = refreshToken } },
+                };
+                return new ConfigFile(fresh.DefaultProfile, profiles);
+            },
+            ct);
     }
 }
 
