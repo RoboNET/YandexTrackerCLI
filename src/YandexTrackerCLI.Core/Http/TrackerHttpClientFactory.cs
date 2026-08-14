@@ -7,7 +7,7 @@ using Config;
 /// <summary>
 /// Builds a pre-configured <see cref="HttpClient"/> for the Yandex Tracker API by composing
 /// the delegating handler chain:
-/// Retry -&gt; AllowedQueuesGuard -&gt; AllowedWriteIssuesGuard -&gt; ReadOnlyGuard -&gt; OrgHeader -&gt; DPoP -&gt; Auth -&gt; inner transport.
+/// Retry -&gt; AllowedQueuesGuard -&gt; AllowedWriteIssuesGuard -&gt; ExternalEffectsGuard -&gt; ReadOnlyGuard -&gt; OrgHeader -&gt; DPoP -&gt; Auth -&gt; inner transport.
 /// </summary>
 public static class TrackerHttpClientFactory
 {
@@ -66,6 +66,7 @@ public static class TrackerHttpClientFactory
         chain = new DPoPHandler() { InnerHandler = chain };
         chain = new OrgHeaderHandler(profile.OrgType, profile.OrgId) { InnerHandler = chain };
         chain = new ReadOnlyGuardHandler(profile.ReadOnly) { InnerHandler = chain };
+        chain = new ExternalEffectsGuardHandler(profile.ExternalEffectsAllowed, profile.Name) { InnerHandler = chain };
         chain = new AllowedWriteIssuesGuardHandler(profile.AllowedWriteIssues, profile.Name) { InnerHandler = chain };
         chain = new AllowedQueuesGuardHandler(profile.AllowedQueues, profile.Name) { InnerHandler = chain };
         chain = new RetryHandler() { InnerHandler = chain };

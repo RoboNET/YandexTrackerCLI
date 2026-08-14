@@ -135,7 +135,8 @@ public static class FederatedReloginService
         var expiresAtIso = result.ExpiresAt.ToUniversalTime().ToString("O");
 
         // Persist ONLY this profile's auth; everything else (other profiles, default_profile,
-        // org settings, read_only, allowed_queues, allowed_write_issues, default_format) is
+        // org settings, read_only, allowed_queues, allowed_write_issues, external_effects,
+        // default_format) is
         // preserved verbatim. The `with`-expression is load-bearing: a positional constructor
         // call would silently drop any profile field added later, and for the policy fields
         // that means a restricted profile losing its restrictions mid-session — re-login also

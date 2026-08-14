@@ -39,9 +39,9 @@ using Profile = YandexTrackerCLI.Core.Config.Profile;
 /// </para>
 /// <para>
 /// <b>Login в существующий профиль пересоздаёт его политики.</b> <c>read_only</c>,
-/// <c>allowed_queues</c> и <c>allowed_write_issues</c> берутся <i>только</i> из флагов
-/// текущего вызова: <c>--read-only</c> ставит <c>read_only=true</c>, списки очередей и
-/// задач снимаются. Это единственный путь ослабить политику профиля — <c>yt config set</c>
+/// <c>allowed_queues</c>, <c>allowed_write_issues</c> и <c>external_effects</c> берутся
+/// <i>только</i> из флагов текущего вызова: <c>--read-only</c> ставит <c>read_only=true</c>,
+/// списки очередей и задач снимаются, запрет внешних эффектов снимается. Это единственный путь ослабить политику профиля — <c>yt config set</c>
 /// умеет её только ужесточать. Барьер держится на том, что <c>yt config get</c> маскирует
 /// <c>auth.token</c> и <c>auth.private_key_pem</c>: без самих креденшелов повторный login
 /// не сделать. Сохраняется при повторном login только <c>default_format</c> — это
@@ -219,7 +219,8 @@ public static class AuthLoginCommand
                         auth,
                         DefaultFormat: prevProfile?.DefaultFormat,
                         AllowedQueues: null,
-                        AllowedWriteIssues: null),
+                        AllowedWriteIssues: null,
+                        ExternalEffects: null),
                 };
                 var defaultName = string.IsNullOrWhiteSpace(cfg.DefaultProfile) ? profileName : cfg.DefaultProfile;
                 await store.SaveAsync(new ConfigFile(defaultName, profiles), ct);

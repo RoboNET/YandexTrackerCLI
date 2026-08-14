@@ -16,6 +16,7 @@ internal static class ConfigKeyAccess
     private static readonly string[] Allow =
     {
         "org_type", "org_id", "read_only", "default_format", "allowed_queues", "allowed_write_issues",
+        "external_effects",
         "auth.type", "auth.token", "auth.service_account_id",
         "auth.key_id", "auth.private_key_path", "auth.private_key_pem",
     };
@@ -56,6 +57,8 @@ internal static class ConfigKeyAccess
         "default_format"          => p.DefaultFormat,
         "allowed_queues"          => QueuePolicy.FormatList(QueuePolicy.Normalize(p.AllowedQueues)),
         "allowed_write_issues"    => IssueWritePolicy.FormatList(IssueWritePolicy.Normalize(p.AllowedWriteIssues)),
+        // Отсутствие ключа означает «разрешено», поэтому null и true печатаются одинаково.
+        "external_effects"        => (p.ExternalEffects ?? true) ? "true" : "false",
         "auth.type"               => p.Auth.Type switch
         {
             AuthType.OAuth          => "oauth",
@@ -83,10 +86,11 @@ internal static class ConfigKeyAccess
     {
         "org_type"                => p with { OrgType = ParseOrgType(value) },
         "org_id"                  => p with { OrgId = value },
-        "read_only"               => p with { ReadOnly = ParseBool(value) },
+        "read_only"               => p with { ReadOnly = ParseBool(value, "read_only") },
         "default_format"          => p with { DefaultFormat = ValidateFormat(value) },
         "allowed_queues"          => p with { AllowedQueues = ParseAllowedQueues(value) },
         "allowed_write_issues"    => p with { AllowedWriteIssues = ParseAllowedWriteIssues(value) },
+        "external_effects"        => p with { ExternalEffects = ParseBool(value, "external_effects") },
         "auth.type"               => p with { Auth = p.Auth with { Type = ParseAuthType(value) } },
         "auth.token"              => p with { Auth = p.Auth with { Token = value } },
         "auth.service_account_id" => p with { Auth = p.Auth with { ServiceAccountId = value } },
@@ -170,12 +174,12 @@ internal static class ConfigKeyAccess
     /// понимали одно и то же. Код ошибки остаётся <see cref="ErrorCode.InvalidArgs"/>:
     /// здесь значение приходит аргументом команды, а не из окружения.
     /// </remarks>
-    private static bool ParseBool(string v) => EnvBool.Classify(v) switch
+    private static bool ParseBool(string v, string key) => EnvBool.Classify(v) switch
     {
         EnvBoolValue.True  => true,
         EnvBoolValue.False => false,
         _ => throw new TrackerException(
             ErrorCode.InvalidArgs,
-            $"read_only must be one of 1/true/yes/on or 0/false/no/off (was '{v}')."),
+            $"{key} must be one of 1/true/yes/on or 0/false/no/off (was '{v}')."),
     };
 }

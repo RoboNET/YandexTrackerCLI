@@ -549,4 +549,94 @@ public sealed class EnvOverridesTests
 
         await Assert.That(eff.ReadOnly).IsTrue();
     }
+
+    /// <summary>
+    /// Отсутствие ключа <c>external_effects</c> ничего не меняет: внешние эффекты разрешены.
+    /// </summary>
+    [Test]
+    public async Task Resolve_ExternalEffects_DefaultsToAllowed()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.ExternalEffectsAllowed).IsTrue();
+    }
+
+    /// <summary>
+    /// <c>external_effects: false</c> в профиле запрещает внешние эффекты.
+    /// </summary>
+    [Test]
+    public async Task Resolve_ExternalEffects_FalseInProfile_Forbids()
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            ExternalEffects: false));
+
+        var eff = EnvOverrides.Resolve(cfg, null, new Dictionary<string, string?>());
+
+        await Assert.That(eff.ExternalEffectsAllowed).IsFalse();
+    }
+
+    /// <summary>
+    /// Переменная окружения ограничение включает.
+    /// </summary>
+    [Test]
+    [Arguments("0")]
+    [Arguments("false")]
+    [Arguments("no")]
+    [Arguments("off")]
+    [Arguments(" OFF ")]
+    public async Task Resolve_ExternalEffectsEnv_CanTighten(string raw)
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+        var env = new Dictionary<string, string?> { ["YT_EXTERNAL_EFFECTS"] = raw };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.ExternalEffectsAllowed).IsFalse();
+    }
+
+    /// <summary>
+    /// …но снять запрет профиля не может: окружение так же управляемо вызывающим,
+    /// как и командная строка.
+    /// </summary>
+    [Test]
+    [Arguments("1")]
+    [Arguments("true")]
+    [Arguments("yes")]
+    [Arguments("on")]
+    public async Task Resolve_ExternalEffectsEnv_CannotLiftProfilePolicy(string raw)
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x"),
+            ExternalEffects: false));
+        var env = new Dictionary<string, string?> { ["YT_EXTERNAL_EFFECTS"] = raw };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env);
+
+        await Assert.That(eff.ExternalEffectsAllowed).IsFalse();
+    }
+
+    /// <summary>
+    /// Нераспознанное значение — ошибка конфигурации, а не молчаливое «выключено»:
+    /// иначе опечатка оставляла бы без защиты того, кто считает себя защищённым.
+    /// </summary>
+    [Test]
+    [Arguments("enabled")]
+    [Arguments("да")]
+    [Arguments("maybe")]
+    public async Task Resolve_ExternalEffectsEnv_Unrecognized_IsConfigError(string raw)
+    {
+        var cfg = CfgWith(new Profile(
+            OrgType.Cloud, "o", false, new AuthConfig(AuthType.OAuth, Token: "y0_x")));
+        var env = new Dictionary<string, string?> { ["YT_EXTERNAL_EFFECTS"] = raw };
+
+        var ex = Assert.Throws<TrackerException>(() => EnvOverrides.Resolve(cfg, null, env));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("YT_EXTERNAL_EFFECTS");
+    }
 }

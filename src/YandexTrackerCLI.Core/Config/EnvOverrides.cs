@@ -94,6 +94,28 @@ public static class EnvOverrides
         var envRo = EnvBool.ResolveStrict(env, "YT_READ_ONLY", "the profile's read_only");
         var readOnly = cliReadOnly || envRo || (baseProfile?.ReadOnly ?? false);
 
+        // external_effects: переменная может ограничение только ВКЛЮЧИТЬ. YT_EXTERNAL_EFFECTS=0
+        // запрещает внешние эффекты поверх любого профиля, но YT_EXTERNAL_EFFECTS=1 не снимает
+        // запрет профиля — иначе ограничиваемый вызывающий снимал бы его сам, ровно как это
+        // запрещено для YT_ALLOWED_WRITE_ISSUES. Разбор строгий: мусор — ConfigError, а не
+        // молчаливое «выключено» (см. EnvBool).
+        var rawExternalEffects = env.GetValueOrDefault("YT_EXTERNAL_EFFECTS");
+        var envForbidsExternalEffects = EnvBool.Classify(rawExternalEffects) switch
+        {
+            // Ужесточает только явное отрицание; true и снятая переменная оставляют
+            // действовать политику профиля.
+            EnvBoolValue.False => true,
+            EnvBoolValue.True or EnvBoolValue.Unset => false,
+            // Мусор — ConfigError: текст отказа (перечень написаний, подсказка про fallback)
+            // живёт в ResolveStrict, поэтому бросает он же.
+            _ => EnvBool.ResolveStrict(
+                rawExternalEffects,
+                "YT_EXTERNAL_EFFECTS",
+                "the profile's external_effects"),
+        };
+        var externalEffectsAllowed =
+            (baseProfile?.ExternalEffects ?? true) && !envForbidsExternalEffects;
+
         // allowed_queues намеренно не имеет env-override: это свойство самих креденшелов,
         // а переменная окружения так же управляема вызывающим, как и флаг командной строки.
         var allowedQueues = QueuePolicy.Normalize(baseProfile?.AllowedQueues);
@@ -163,6 +185,7 @@ public static class EnvOverrides
             orgId,
             readOnly,
             auth,
+            ExternalEffectsAllowed: externalEffectsAllowed,
             DefaultFormat: baseProfile?.DefaultFormat,
             AllowedQueues: allowedQueues,
             AllowedWriteIssues: allowedWriteIssues,

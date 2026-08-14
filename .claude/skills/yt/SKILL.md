@@ -33,10 +33,10 @@ scoop install yt
 irm https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 | iex
 ```
 
-Без пакетных менеджеров — готовый бинарь из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest) (архивы: `yt-linux-x64.tar.gz`, `yt-linux-arm64.tar.gz`, `yt-osx-arm64.tar.gz`, `yt-win-x64.zip`):
+Без пакетных менеджеров — готовый бинарь из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest) (архивы: `yt-linux-x64.tar.gz`, `yt-linux-arm64.tar.gz`, `yt-linux-musl-x64.tar.gz`, `yt-linux-musl-arm64.tar.gz`, `yt-osx-arm64.tar.gz`, `yt-win-x64.zip`):
 
 ```bash
-RID=linux-x64   # подставь платформу
+RID=linux-x64   # подставь платформу; на Alpine и других musl-образах — linux-musl-x64 / linux-musl-arm64
 curl -fsSL -o yt.tar.gz "https://github.com/RoboNET/YandexTrackerCLI/releases/latest/download/yt-${RID}.tar.gz"
 tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
 # macOS: если бинарь в карантине — xattr -d com.apple.quarantine /usr/local/bin/yt
@@ -47,12 +47,12 @@ tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
 ## Базовые правила
 
 - **JSON-вывод по умолчанию для скриптов** — auto-detect: при pipe всегда compact JSON. Не пытайся парсить таблицы — всегда работай с `yt ... | jq` или `python -c`.
-- **Exit-коды** — стабильные (см. ниже): 0 = успех, 2 = плохие аргументы, 3 = read-only заблокирован, 4 = auth_failed/forbidden, 5 = not_found, 6 = rate_limited, 7 = server_error, 8 = network_error, 9 = config_error, 10 = policy_violation (очередь вне `allowed_queues` профиля либо запись вне `allowed_write_issues`), 11 = cancelled (Ctrl-C или сработавший таймаут), 130/143 = процесс убит SIGINT/SIGTERM самой ОС. Отмену проверяй как «11, 130 или 143».
+- **Exit-коды** — стабильные (см. ниже): 0 = успех, 2 = плохие аргументы, 3 = read-only заблокирован, 4 = auth_failed/forbidden, 5 = not_found, 6 = rate_limited, 7 = server_error, 8 = network_error, 9 = config_error, 10 = policy_violation (очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues` либо внешний эффект при `external_effects: false`), 11 = cancelled (Ctrl-C или сработавший таймаут), 130/143 = процесс убит SIGINT/SIGTERM самой ОС. Отмену проверяй как «11, 130 или 143».
 - **Exit 11 = результата нет.** Команда не доработала до конца: пришёл Ctrl-C/SIGTERM либо истёк HTTP-таймаут. Всё, что успело напечататься в stdout, — обрывок, а не ответ; повторяй команду, а не разбирай её вывод. Сообщение в stderr называет причину, а при таймауте — ещё и текущее значение и способ его поднять (`--timeout <секунды>`, env `YT_TIMEOUT`). Для мутирующих команд exit 11 означает «неизвестно, применилось ли» — перед повтором проверь состояние задачи. Значение таймаута — целое от 1 до 86400; `--timeout 0` или `YT_TIMEOUT=-5` отвергаются как `invalid_args` (exit 2), а не игнорируются молча.
 - **Профиль** — выбирается через `--profile <name>` или `YT_PROFILE`. Если в конфиге ровно один профиль — он используется автоматически. Если несколько — нужно либо указать, либо предварительно `yt config profile <name>`.
 - **Перед мутирующими действиями** — спроси пользователя подтверждение (создание issue, удаление, изменение статуса, добавление комментария от его имени).
 - **Страховка `--read-only`** — необязательный пояс безопасности для AI-агентов или массовых операций. Блокирует POST/PUT/PATCH/DELETE до выхода в сеть, возвращает exit 3. Пропускает POST на `_search`-эндпоинты (поиск через `issue find`). Для обычных read-команд (`issue get`, `comment list`, `attachment list`, …) флаг не нужен — они и так GET-запросы.
-- **Политики профиля (`read_only`, `allowed_queues`, `allowed_write_issues`)** — то же ограничение, но как свойство самих креденшелов, а не флаг вызова: их нельзя «забыть» в командной строке. `allowed_write_issues` ограничивает **только запись** (чтение остаётся), поэтому годится для автоматики, которой надо ответить ровно в одну задачу. См. раздел «Политики профиля» ниже.
+- **Политики профиля (`read_only`, `allowed_queues`, `allowed_write_issues`, `external_effects`)** — то же ограничение, но как свойство самих креденшелов, а не флаг вызова: их нельзя «забыть» в командной строке. `allowed_write_issues` ограничивает **только запись** (чтение остаётся), поэтому годится для автоматики, которой надо ответить ровно в одну задачу. `external_effects: false` запрещает **инициировать рассылку и интеграции явно** — призыв (`summonees`/`maillistSummonees`) и мутации автоматизаций (`triggers`/`autoactions`/`macros`), — оставляя обычную работу с задачами. См. раздел «Политики профиля» ниже.
 
 ## Переменные окружения
 
@@ -64,6 +64,7 @@ tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
 |---|---|---|
 | `YT_READ_ONLY` | включают `1`/`true`/`yes`/`on`, выключают `0`/`false`/`no`/`off` — регистр не важен, пробелы по краям обрезаются (`on`, `YES`, `TrUe`, `" 1"` включают). Пусто или одни пробелы = переменная не задана. **Любое другое значение — `config_error` (exit 9)**, а не тихое «выключено» | Блокирует POST/PUT/PATCH/DELETE до выхода в сеть (exit 3). Складывается по ИЛИ с `--read-only` и с `read_only` профиля: **только ужесточает**, снять политику профиля через `YT_READ_ONLY=0` нельзя |
 | `YT_ALLOWED_WRITE_ISSUES` | список ключей через запятую (`DEV-42,DEV-43`), сравнение без учёта регистра | Ограничивает область записи. **Только сужает:** профиль без списка + env = список из env; профиль со списком + env = **пересечение**; непересекающиеся списки = `config_error` (exit 9); значение без единого ключа (`","`, `",,"`) = `config_error` (exit 9); значение из одних пробелов игнорируется. Подробности и таблица случаев — в «Политики профиля» |
+| `YT_EXTERNAL_EFFECTS` | те же написания, что у `YT_READ_ONLY`; разбор такой же строгий (мусор — `config_error`, exit 9) | `0`/`false`/`no`/`off` запрещает инициировать рассылку и интеграции явно: `summonees`/`maillistSummonees` в теле и мутации `triggers`/`autoactions`/`macros` (exit 10). **Только ужесточает:** `1`/`true` не снимает `external_effects: false` профиля |
 | `YT_ALLOWED_QUEUES` | **не существует** | Ограничение очередей задаётся **только** в профиле (`yt config set --profile ci allowed_queues DEV,QA`). Env-переменной нет намеренно: окружение так же управляемо вызывающим, как и командная строка, поэтому ограничением быть не может. Не пытайся её задать — она будет проигнорирована |
 
 **Коды отказа при мусорном значении разные — скрипту нужно знать оба.** Мусор в окружении (`YT_READ_ONLY=мусор`) — это `config_error` (**exit 9**), а мусор в аргументе команды (`yt config set read_only мусор`) — `invalid_args` (**exit 2**). Асимметрия намеренная: в первом случае неверно задано окружение процесса, во втором — аргумент вызова. Проверяй оба кода, если скрипт разбирает причину отказа. То же самое и у `YT_LOG_RAW`.
@@ -290,7 +291,7 @@ yt --read-only auth login --type service-account \
   --org-type cloud --org-id <org-id> --profile ci
 ```
 
-Повторный `auth login` в существующий профиль **пересоздаёт** его: политики (`read_only`, `allowed_queues`, `allowed_write_issues`) берутся только из флагов этого вызова, то есть по умолчанию снимаются, а `--read-only` ставит `read_only=true`. Переносится только `default_format`. Это и есть штатный путь сброса политики — он требует самих креденшелов (`yt config get` их маскирует). `yt auth relogin`, наоборот, обновляет только токены и все политики сохраняет.
+Повторный `auth login` в существующий профиль **пересоздаёт** его: политики (`read_only`, `allowed_queues`, `allowed_write_issues`, `external_effects`) берутся только из флагов этого вызова, то есть по умолчанию снимаются, а `--read-only` ставит `read_only=true`. Переносится только `default_format`. Это и есть штатный путь сброса политики — он требует самих креденшелов (`yt config get` их маскирует). `yt auth relogin`, наоборот, обновляет только токены и все политики сохраняет.
 
 ## Политики профиля
 
@@ -320,10 +321,18 @@ yt config get --profile ci allowed_write_issues  # → "DEV-42"
 # Список профиля переменная только СУЖАЕТ: действует пересечение, чужую задачу не добавить
 YT_ALLOWED_WRITE_ISSUES=DEV-42,DEV-43 yt comment add DEV-42 --text "..."
 
+# не инициировать рассылку и интеграции явно
+yt config set --profile ci external_effects false
+yt config get --profile ci external_effects       # → "false"
+
+# то же самое на один запуск
+YT_EXTERNAL_EFFECTS=0 yt comment add DEV-42 --text "..."
+
 # проверить, что окружение настроено как задумано
 yt auth status --profile ci
 # {"profile":"ci",...,"read_only":true,"allowed_queues":["DEV","OPS","QA"],
-#  "allowed_write_issues":["DEV-42"],"allowed_write_issues_source":"profile"}
+#  "allowed_write_issues":["DEV-42"],"allowed_write_issues_source":"profile",
+#  "external_effects":false}
 ```
 
 Как работает `allowed_queues`:
@@ -365,6 +374,18 @@ yt auth status --profile ci
 - **Отсутствие ключа в профиле = ограничения нет**, но снять уже выставленный список через `yt config set allowed_write_issues ""` нельзя — только сузить (см. ниже).
 - `yt auth status` печатает действующий список в `allowed_write_issues` и его источник в `allowed_write_issues_source`: `profile`, `env` (профиль ограничения не нёс) или `profile+env` (действует пересечение).
 
+Как работает `external_effects` (запрет **инициировать рассылку и интеграции явно**):
+
+- **Призыв запрещён.** Любое мутирующее обращение, в JSON-теле которого на любом уровне вложенности есть `summonees` или `maillistSummonees` (они шлют письма людям и в списки рассылки), — включая вложенный комментарий в теле перехода и payload `yt issue batch`. Проверяется фактическое тело запроса, а не разобранные флаги, поэтому `--json-file`/`--json-stdin` ничего не меняют:
+  ```json
+  {"error":{"code":"policy_violation","message":"request body field 'summonees' summons recipients by mail and is blocked by external_effects of profile 'ci'"}}
+  ```
+- **Мутации автоматизаций запрещены** — вся группа `yt automation`. `POST`/`PUT`/`PATCH`/`DELETE` на `queues/{KEY}/triggers`, `queues/{KEY}/autoactions/{id}`, `queues/{KEY}/macros/{id}`: среди действий триггера есть HTTP-запрос наружу и отправка письма, а созданные триггер, автодействие и макрос переживают сессию. **Чтение (`GET`) остаётся разрешённым.**
+- Сегмент ресурса сверяется позиционно (`queues/{KEY}/{triggers|autoactions|macros}`), поэтому очередь с ключом `TRIGGERS` или `MACROS` под запрет не попадает. Сегменты пути декодируются до сравнения (`%74riggers` не обходит), сравнение — без учёта регистра; `POST .../_search` считается чтением и проходит. Тело, объявленное как JSON, но неразбираемое, и тело сверх 4 МБ отклоняются: доказать, что призыва в них нет, нельзя.
+- **Больше ничего не запрещается**: сам по себе `bulkchange`, `notify`-параметры и прочее — вне объёма политики.
+- **Отсутствие ключа `external_effects` = разрешено.** `YT_EXTERNAL_EFFECTS` только ужесточает: `0`/`false`/`no`/`off` запрещает поверх любого профиля, `1`/`true` запрет профиля не снимает, мусор — `config_error` (exit 9).
+- **Это не гарантия, что наружу ничего не уйдёт.** Любая правка задачи может поднять триггер, уже настроенный на стороне очереди, и он отправит письмо или HTTP-запрос — CLI об этом не знает и повлиять не может. Гарантия молчания есть только у `read_only`.
+
 ### Изменение и сброс политик
 
 `yt config set` умеет только **ужесточать** политику:
@@ -373,6 +394,8 @@ yt auth status --profile ci
 |---|---|
 | `read_only false → true` | ок |
 | `read_only true → false` | `policy_violation`, exit 10 |
+| `external_effects` не задан/`true` → `false` | ок |
+| `external_effects false → true` | `policy_violation`, exit 10 |
 | ограничения нет → любой список | ок |
 | список → его подмножество | ок |
 | список → расширение или `""` | `policy_violation`, exit 10 |
@@ -381,7 +404,8 @@ yt auth status --profile ci
 
 ```bash
 yt auth login --profile ci --type oauth --token <token> --org-type cloud --org-id <org-id>
-# политики берутся только из флагов этого вызова: read_only=false, списки сняты
+# политики берутся только из флагов этого вызова: read_only=false, списки и
+# запрет внешних эффектов сняты
 ```
 
 Барьер держится на том, что `yt config get` маскирует `auth.token` и `auth.private_key_pem`: без креденшелов повторный login не сделать. `yt auth logout` чистит токен, но политики оставляет; `yt auth relogin` (и авто-relogin при неудачном DPoP-refresh) политики сохраняет.
@@ -397,6 +421,7 @@ yt auth login --profile ci --type oauth --token <token> --org-type cloud --org-i
 
 - **Boards, sprints, projects, глобальные справочники полей и пользователи** по `allowed_queues` не фильтруются. **Локальные** поля очереди — исключение: `field list --queue OPS` бьёт в `queues/OPS/localFields` и отклоняется как адресное обращение (exit 10).
 - **Ссылки на чужие задачи внутри разрешённой** (`issue get` — поля `parent`/`links`, `issue changelog`): ответ API печатается как есть, поэтому видны и ключи, и **темы** (`display`) задач из очередей вне списка. Сами эти задачи остаются нечитаемыми: `issue get OPS-1` даёт `policy_violation` (exit 10), запрос в сеть не уходит. Отдельная выдача связей (`link list`) отфильтрована — там чужие связи вырезаются целиком.
+- **`external_effects` не закрывает уже настроенные триггеры**: правка задачи может поднять триггер очереди, который сам отправит письмо или HTTP-запрос. Политика запрещает только то, что инициирует сам вызывающий; «наружу ничего не уйдёт» гарантирует лишь `read_only`.
 - **Серверные права политики не заменяют**: это ограничение клиента поверх токена.
 
 ### Повторный вход (federated DPoP)
@@ -475,7 +500,7 @@ fi
 | 7 | server_error | retry или сообщить о сбое Tracker |
 | 8 | network_error | проверить сеть, прокси, timeout |
 | 9 | config_error | проверить профиль (`yt config list`) или `auth login` |
-| 10 | policy_violation | очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues`, `summonees`/`maillistSummonees` при действующем ограничении области записи, либо попытка ослабить политику через `yt config set` — сменить профиль (`--profile`) или, если есть креденшелы, пересоздать его через `yt auth login` |
+| 10 | policy_violation | очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues`, `summonees`/`maillistSummonees` при действующем ограничении области записи или при `external_effects: false`, мутация `triggers`/`autoactions`/`macros` при `external_effects: false`, либо попытка ослабить политику через `yt config set` — сменить профиль (`--profile`) или, если есть креденшелы, пересоздать его через `yt auth login` |
 | 11 | cancelled | команда прервана: Ctrl-C/SIGINT, SIGTERM или истёкший HTTP-таймаут. Вывод неполон — повторить команду; при таймауте поднять его через `--timeout <секунды>` или `YT_TIMEOUT` |
 | 130 | — | процесс убит SIGINT самой ОС (сигнал пришёл до первой async-операции либо это второй Ctrl-C); JSON-ошибки нет. Тот же код у `yt suggest` при выходе по `Esc` — штатный отказ от выбора |
 | 143 | — | процесс убит SIGTERM самой ОС; JSON-ошибки нет |
@@ -507,6 +532,8 @@ fi
 | Профиль только на чтение | `yt config set --profile ci read_only true` |
 | Ограничить очереди профиля | `yt config set --profile ci allowed_queues DEV,QA` |
 | Разрешить запись только в задачу | `yt config set --profile ci allowed_write_issues DEV-42` |
+| Запретить призыв и правку автоматизаций | `yt config set --profile ci external_effects false` |
 | Сбросить политики профиля | `yt auth login --profile ci --type oauth --token <token> --org-type cloud --org-id <id>` |
 | Сузить область записи на один запуск | `YT_ALLOWED_WRITE_ISSUES=DEV-42 yt comment add DEV-42 --text "..."` (со списком профиля — пересечение) |
+| Запретить внешние эффекты на один запуск | `YT_EXTERNAL_EFFECTS=0 yt comment add DEV-42 --text "..."` |
 | Проверить политики профиля | `yt auth status --profile ci` |
