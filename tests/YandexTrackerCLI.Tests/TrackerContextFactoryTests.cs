@@ -263,6 +263,173 @@ public sealed class TrackerContextFactoryTests
         await Assert.That(ex.Message).Contains("not-a-date");
     }
 
+    /// <summary>
+    /// <c>YT_LOG_FILE</c> включает wire-log для ОБЫЧНОЙ команды, а не только для
+    /// <c>auth login</c>/<c>auth relogin</c>. Раньше ключа не было в <c>EnvReader.Keys</c>,
+    /// поэтому <c>TryGetValue</c> всегда возвращал <c>false</c> и файл не создавался.
+    /// </summary>
+    [Test]
+    public async Task EnvLogFile_WritesWireLog_ForOrdinaryCommandPath()
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var logPath = Path.Combine(env.Root, "wire-env.log");
+        env.Set("YT_LOG_FILE", logPath);
+        env.Set("YT_LOG_RAW", null);
+
+        var inner = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using (var ctx = await TrackerContextFactory.CreateAsync(null, false, null, innerHandler: inner))
+        {
+            _ = await ctx.RawHttp.GetAsync("https://api.tracker.yandex.net/v3/myself");
+        }
+
+        await Assert.That(File.Exists(logPath)).IsTrue();
+        var log = await File.ReadAllTextAsync(logPath);
+        await Assert.That(log).Contains("/v3/myself");
+        // Маскирование по умолчанию: живой токен в файл не попадает.
+        await Assert.That(log).DoesNotContain("y0_X");
+        await Assert.That(log).Contains("***");
+    }
+
+    /// <summary>
+    /// <c>--log-file</c> имеет приоритет над <c>YT_LOG_FILE</c>: пишется только файл из флага.
+    /// </summary>
+    [Test]
+    public async Task CliLogFile_WinsOver_EnvLogFile()
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var envPath = Path.Combine(env.Root, "wire-env.log");
+        var cliPath = Path.Combine(env.Root, "wire-cli.log");
+        env.Set("YT_LOG_FILE", envPath);
+        env.Set("YT_LOG_RAW", null);
+
+        var inner = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using (var ctx = await TrackerContextFactory.CreateAsync(
+                   null, false, null, wireLogPath: cliPath, innerHandler: inner))
+        {
+            _ = await ctx.RawHttp.GetAsync("https://api.tracker.yandex.net/v3/myself");
+        }
+
+        await Assert.That(File.Exists(cliPath)).IsTrue();
+        await Assert.That(File.Exists(envPath)).IsFalse();
+    }
+
+    /// <summary>
+    /// <c>YT_LOG_RAW</c> тоже читается для обычных команд: маскирование выключается,
+    /// и токен попадает в файл как есть. Разбор строгий — снимает защиту только явное
+    /// истинное написание, <c>off</c>/<c>0</c> оставляют маскирование.
+    /// </summary>
+    [Test]
+    [Arguments("1", false)]
+    [Arguments("on", false)]
+    [Arguments("TRUE", false)]
+    [Arguments(" yes ", false)]
+    [Arguments("off", true)]
+    [Arguments("0", true)]
+    public async Task EnvLogRaw_ControlsMasking_ForOrdinaryCommandPath(string rawValue, bool expectMasked)
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var logPath = Path.Combine(env.Root, "wire-raw.log");
+        env.Set("YT_LOG_FILE", logPath);
+        env.Set("YT_LOG_RAW", rawValue);
+
+        var inner = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using (var ctx = await TrackerContextFactory.CreateAsync(null, false, null, innerHandler: inner))
+        {
+            _ = await ctx.RawHttp.GetAsync("https://api.tracker.yandex.net/v3/myself");
+        }
+
+        var log = await File.ReadAllTextAsync(logPath);
+        await Assert.That(log.Contains("y0_X", StringComparison.Ordinal)).IsEqualTo(!expectMasked);
+    }
+
+    /// <summary>
+    /// Нераспознанное значение <c>YT_LOG_RAW</c> НЕ снимает маскирование: снятие защиты —
+    /// решение, которое пользователь должен выразить явно, поэтому мусор валит команду
+    /// с <see cref="ErrorCode.ConfigError"/>, как и у <c>YT_READ_ONLY</c>. Раньше такое
+    /// значение проходило мягкий разбор и клало в файл живые токены.
+    /// </summary>
+    [Test]
+    [Arguments("disabled")]
+    [Arguments("none")]
+    [Arguments("нет")]
+    [Arguments("maybe")]
+    public async Task EnvLogRaw_Garbage_ThrowsConfigError_AndWritesNoRawSecrets(string rawValue)
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        var logPath = Path.Combine(env.Root, "wire-garbage.log");
+        env.Set("YT_LOG_FILE", logPath);
+        env.Set("YT_LOG_RAW", rawValue);
+
+        var inner = new TestHttpMessageHandler().Push(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var ex = await Assert.ThrowsAsync<TrackerException>(
+            () => TrackerContextFactory.CreateAsync(null, false, null, innerHandler: inner));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Message).Contains("YT_LOG_RAW");
+        await Assert.That(ex.Message).Contains(rawValue);
+
+        // Ни один запрос не ушёл, значит и живых секретов в файле взяться неоткуда.
+        if (File.Exists(logPath))
+        {
+            var log = await File.ReadAllTextAsync(logPath);
+            await Assert.That(log).DoesNotContain("y0_X");
+        }
+    }
+
+    /// <summary>
+    /// <c>YT_READ_ONLY</c> в написании, которое старый разбор не понимал (<c>on</c>),
+    /// доходит до HTTP-конвейера и блокирует мутирующий запрос.
+    /// </summary>
+    [Test]
+    public async Task EnvReadOnly_On_BlocksPost_EndToEnd()
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        env.Set("YT_READ_ONLY", "on");
+
+        var inner = new TestHttpMessageHandler();
+        using var ctx = await TrackerContextFactory.CreateAsync(null, false, null, innerHandler: inner);
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.tracker.yandex.net/v3/issues");
+        var ex = await Assert.ThrowsAsync<TrackerException>(() => ctx.RawHttp.SendAsync(req));
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ReadOnlyMode);
+    }
+
+    /// <summary>
+    /// Нераспознанное значение <c>YT_READ_ONLY</c> валит команду с <c>config_error</c> (exit 9),
+    /// а не молча выполняет её без защиты.
+    /// </summary>
+    [Test]
+    public async Task EnvReadOnly_Garbage_FailsWithConfigError_EndToEnd()
+    {
+        using var env = new TestEnv();
+        env.Set("YT_API_BASE_URL", null);
+        env.Set("YT_TIMEOUT", null);
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+        env.Set("YT_READ_ONLY", "мусор");
+
+        var ex = await Assert.ThrowsAsync<TrackerException>(
+            () => TrackerContextFactory.CreateAsync(null, false, null));
+
+        await Assert.That(ex!.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Code.ToExitCode()).IsEqualTo(9);
+        await Assert.That(ex.Message).Contains("YT_READ_ONLY");
+    }
+
     private sealed class FakeExchange : IIamExchangeClient
     {
         private readonly Func<string, IamExchangeResult> _impl;

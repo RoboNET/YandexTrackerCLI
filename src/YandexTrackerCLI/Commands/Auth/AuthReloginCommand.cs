@@ -3,6 +3,7 @@ namespace YandexTrackerCLI.Commands.Auth;
 using System.CommandLine;
 using System.Net.Http;
 using Core.Api.Errors;
+using Core.Config;
 using YandexTrackerCLI.Auth.Federated;
 using Interactive;
 using Core.Http;
@@ -49,8 +50,11 @@ public static class AuthReloginCommand
 
                 var wireLogPath = parseResult.GetValue(RootCommandBuilder.LogFileOption)
                     ?? Environment.GetEnvironmentVariable("YT_LOG_FILE");
-                var wireLogMask = !parseResult.GetValue(RootCommandBuilder.LogRawOption)
-                    && !IsTruthyEnv("YT_LOG_RAW");
+                // Разбор env делается до проверки флага и не короткозамыкается: мусор в
+                // YT_LOG_RAW — ошибка конфигурации в любом случае, ровно как в
+                // TrackerContextFactory для остальных команд.
+                var rawByEnv = EnvReader.ResolveLogRaw(Environment.GetEnvironmentVariable("YT_LOG_RAW"));
+                var wireLogMask = !parseResult.GetValue(RootCommandBuilder.LogRawOption) && !rawByEnv;
 
                 var launcher = FederatedReloginService.TestBrowserLauncher.Value
                     ?? AuthLoginCommand.TestBrowserLauncher.Value
@@ -124,32 +128,5 @@ public static class AuthReloginCommand
         });
 
         return cmd;
-    }
-
-    /// <summary>
-    /// Reads the named environment variable and returns <c>true</c> when its value is a
-    /// "truthy" boolean string (anything other than <c>null</c>, empty, <c>0</c>, <c>false</c>,
-    /// <c>no</c>, <c>off</c>; case-insensitive).
-    /// </summary>
-    /// <param name="name">Environment variable name.</param>
-    /// <returns><c>true</c> when the value is truthy.</returns>
-    private static bool IsTruthyEnv(string name)
-    {
-        var raw = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var v = raw.Trim();
-        if (string.Equals(v, "0", StringComparison.Ordinal)
-            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "no", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
     }
 }

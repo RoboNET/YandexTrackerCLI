@@ -87,6 +87,110 @@ public sealed class EnvOverridesTests
         await Assert.That(eff.ReadOnly).IsTrue();
     }
 
+    /// <summary>
+    /// Все общепринятые истинные написания включают read-only. Раньше принимались ровно
+    /// <c>1</c>/<c>true</c>/<c>True</c>/<c>TRUE</c>/<c>yes</c> без обрезки пробелов, а
+    /// <c>on</c>, <c>YES</c>, <c>TrUe</c> и <c>" 1"</c> молча означали «выключено» — то есть
+    /// переменная, единственная задача которой ограничивать, отказывала в сторону «разрешено».
+    /// </summary>
+    [Test]
+    [Arguments("1")]
+    [Arguments("true")]
+    [Arguments("TRUE")]
+    [Arguments("TrUe")]
+    [Arguments("yes")]
+    [Arguments("YES")]
+    [Arguments("on")]
+    [Arguments(" 1")]
+    [Arguments("\ton\n")]
+    public async Task Resolve_ReadOnlyEnv_TruthySpellings_EnableReadOnly(string raw)
+    {
+        var cfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: false,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var env = new Dictionary<string, string?> { ["YT_READ_ONLY"] = raw };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env, cliReadOnly: false);
+
+        await Assert.That(eff.ReadOnly).IsTrue();
+    }
+
+    [Test]
+    [Arguments("0")]
+    [Arguments("false")]
+    [Arguments("FALSE")]
+    [Arguments("no")]
+    [Arguments("off")]
+    [Arguments(" OFF ")]
+    public async Task Resolve_ReadOnlyEnv_FalsySpellings_LeaveReadOnlyOff(string raw)
+    {
+        var cfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: false,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var env = new Dictionary<string, string?> { ["YT_READ_ONLY"] = raw };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env, cliReadOnly: false);
+
+        await Assert.That(eff.ReadOnly).IsFalse();
+    }
+
+    /// <summary>
+    /// Нераспознанное непустое значение — ошибка, а не тихое «выключено»: пользователь
+    /// должен узнать, что защита не включилась.
+    /// </summary>
+    [Test]
+    [Arguments("мусор")]
+    [Arguments("enabled")]
+    [Arguments("2")]
+    public async Task Resolve_ReadOnlyEnv_Garbage_ThrowsConfigError(string raw)
+    {
+        var cfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: false,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var env = new Dictionary<string, string?> { ["YT_READ_ONLY"] = raw };
+
+        var ex = Assert.Throws<TrackerException>(
+            () => EnvOverrides.Resolve(cfg, null, env, cliReadOnly: false));
+
+        await Assert.That(ex.Code).IsEqualTo(ErrorCode.ConfigError);
+        await Assert.That(ex.Code.ToExitCode()).IsEqualTo(9);
+        await Assert.That(ex.Message).Contains("YT_READ_ONLY");
+        await Assert.That(ex.Message).Contains(raw);
+        await Assert.That(ex.Message).Contains("read_only");
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task Resolve_ReadOnlyEnv_EmptyOrWhitespace_MeansUnset_ProfileWins(string raw)
+    {
+        var roCfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: true,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var rwCfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: false,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var env = new Dictionary<string, string?> { ["YT_READ_ONLY"] = raw };
+
+        await Assert.That(EnvOverrides.Resolve(roCfg, null, env).ReadOnly).IsTrue();
+        await Assert.That(EnvOverrides.Resolve(rwCfg, null, env).ReadOnly).IsFalse();
+    }
+
+    /// <summary>
+    /// Регрессия: переменная только ужесточает — снять <c>read_only</c> профиля она не может
+    /// ни одним из ложных написаний.
+    /// </summary>
+    [Test]
+    [Arguments("0")]
+    [Arguments("false")]
+    [Arguments("no")]
+    [Arguments("off")]
+    public async Task Resolve_ReadOnlyEnv_CannotLiftProfilePolicy(string raw)
+    {
+        var cfg = CfgWith(new Profile(OrgType.Cloud, "org", ReadOnly: true,
+            new AuthConfig(AuthType.OAuth, Token: "y")));
+        var env = new Dictionary<string, string?> { ["YT_READ_ONLY"] = raw };
+
+        var eff = EnvOverrides.Resolve(cfg, null, env, cliReadOnly: false);
+
+        await Assert.That(eff.ReadOnly).IsTrue();
+    }
+
     [Test]
     public async Task Resolve_ReadOnly_FromCliFlag_Wins_OverFalseInFile()
     {

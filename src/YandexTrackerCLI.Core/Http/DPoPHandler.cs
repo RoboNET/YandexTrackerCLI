@@ -36,6 +36,13 @@ public sealed class DPoPHandler : DelegatingHandler
         if (factory is not null && request.RequestUri is not null)
         {
             var proof = factory(request.Method.Method, request.RequestUri.ToString());
+
+            // RetryHandler — самый внешний в цепочке, поэтому на повторной попытке тот же самый
+            // HttpRequestMessage приходит сюда снова. TryAddWithoutValidation ДОБАВЛЯЕТ значение,
+            // а не заменяет, и без Remove в запросе оказалось бы ДВА доказательства — свежее и
+            // протухшее, с разными jti и iat. Сервер обязан отвергнуть такой запрос: неоднозначное
+            // доказательство и повтор jti — ровно то, от чего защита DPoP и строится.
+            request.Headers.Remove("DPoP");
             request.Headers.TryAddWithoutValidation("DPoP", proof);
         }
 

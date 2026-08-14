@@ -186,8 +186,11 @@ public static class AuthLoginCommand
 
                 var wireLogPath = parseResult.GetValue(RootCommandBuilder.LogFileOption)
                     ?? Environment.GetEnvironmentVariable("YT_LOG_FILE");
-                var wireLogMask = !parseResult.GetValue(RootCommandBuilder.LogRawOption)
-                    && !IsTruthyEnv("YT_LOG_RAW");
+                // Разбор env делается до проверки флага и не короткозамыкается: мусор в
+                // YT_LOG_RAW — ошибка конфигурации в любом случае, ровно как в
+                // TrackerContextFactory для остальных команд.
+                var rawByEnv = EnvReader.ResolveLogRaw(Environment.GetEnvironmentVariable("YT_LOG_RAW"));
+                var wireLogMask = !parseResult.GetValue(RootCommandBuilder.LogRawOption) && !rawByEnv;
 
                 AuthConfig auth = type switch
                 {
@@ -559,30 +562,5 @@ public static class AuthLoginCommand
             KeyId: keyId,
             PrivateKeyPath: keyFile,
             PrivateKeyPem: keyPem);
-    }
-
-    /// <summary>
-    /// Reads the named environment variable and returns <c>true</c> when its value is a
-    /// "truthy" boolean string (anything other than <c>null</c>, empty, <c>0</c>, <c>false</c>,
-    /// <c>no</c>, <c>off</c>; case-insensitive).
-    /// </summary>
-    private static bool IsTruthyEnv(string name)
-    {
-        var raw = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var v = raw.Trim();
-        if (string.Equals(v, "0", StringComparison.Ordinal)
-            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "no", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return true;
     }
 }

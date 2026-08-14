@@ -164,24 +164,18 @@ internal static class ConfigKeyAccess
             $"auth.type must be oauth|iam-static|service-account (was '{v}')."),
     };
 
-    private static bool ParseBool(string v)
+    /// <remarks>
+    /// Набор написаний тот же, что у ограничивающих env-переменных
+    /// (<see cref="EnvBool.Classify"/>), — чтобы `read_only` в конфиге и <c>YT_READ_ONLY</c>
+    /// понимали одно и то же. Код ошибки остаётся <see cref="ErrorCode.InvalidArgs"/>:
+    /// здесь значение приходит аргументом команды, а не из окружения.
+    /// </remarks>
+    private static bool ParseBool(string v) => EnvBool.Classify(v) switch
     {
-        if (v.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || v.Equals("1", StringComparison.Ordinal)
-            || v.Equals("yes", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (v.Equals("false", StringComparison.OrdinalIgnoreCase)
-            || v.Equals("0", StringComparison.Ordinal)
-            || v.Equals("no", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        throw new TrackerException(
+        EnvBoolValue.True  => true,
+        EnvBoolValue.False => false,
+        _ => throw new TrackerException(
             ErrorCode.InvalidArgs,
-            $"read_only must be true/false/1/0 (was '{v}').");
-    }
+            $"read_only must be one of 1/true/yes/on or 0/false/no/off (was '{v}')."),
+    };
 }
