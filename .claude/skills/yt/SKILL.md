@@ -270,7 +270,7 @@ yt auth status --profile ci
 
 Как работает `allowed_queues`:
 
-- **Адресные обращения** к задаче или очереди вне списка блокируются до выхода в сеть — и на чтение, и на запись: `issue get OPS-1`, `comment add OPS-1`, `queue list`-детали, автоматизации `queues/OPS/...`. Ответ — явная ошибка политики, а не `not_found`:
+- **Адресные обращения** к задаче или очереди вне списка блокируются до выхода в сеть — и на чтение, и на запись: `issue get OPS-1`, `comment add OPS-1`, `component list --queue OPS`, автоматизации `queues/OPS/...`. Ответ — явная ошибка политики, а не `not_found`:
   ```json
   {"error":{"code":"policy_violation","message":"queue 'OPS' is outside allowed_queues of profile 'ci' (allowed: DEV, QA)"}}
   ```
@@ -337,8 +337,8 @@ yt auth login --profile ci --type oauth --token <token> --org-type cloud --org-i
 
 Дальше — пределы уже внутри самой модели политик:
 
-- **Boards, sprints, projects, справочники полей и пользователей** по `allowed_queues` не фильтруются.
-- **Ключи чужих задач внутри разрешённой** (`issue get` — поля `parent`/`links`, `issue changelog`) видны; сами задачи прочитать нельзя. Полные данные связанных задач (`link list`) отфильтрованы.
+- **Boards, sprints, projects, глобальные справочники полей и пользователи** по `allowed_queues` не фильтруются. **Локальные** поля очереди — исключение: `field list --queue OPS` бьёт в `queues/OPS/localFields` и отклоняется как адресное обращение (exit 10).
+- **Ссылки на чужие задачи внутри разрешённой** (`issue get` — поля `parent`/`links`, `issue changelog`): ответ API печатается как есть, поэтому видны и ключи, и **темы** (`display`) задач из очередей вне списка. Сами эти задачи остаются нечитаемыми: `issue get OPS-1` даёт `policy_violation` (exit 10), запрос в сеть не уходит. Отдельная выдача связей (`link list`) отфильтрована — там чужие связи вырезаются целиком.
 - **Серверные права политики не заменяют**: это ограничение клиента поверх токена.
 
 ### Повторный вход (federated DPoP)
