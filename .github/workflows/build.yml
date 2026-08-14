@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      rehearse_publish:
+        description: 'Прогнать publish без тега: сборка всех артефактов, релиз не создаётся'
+        type: boolean
+        default: false
 
 jobs:
   # Синтаксис и типовые ошибки workflow'ов. Дёшево и ловит то, что иначе всплывает только
@@ -72,39 +78,52 @@ jobs:
 
   publish:
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Кроме тега — ручная репетиция (rehearse_publish). Job публикует артефакты прогона,
+    # но не релиз: release ниже остаётся привязанным строго к тегу. Репетиция существует
+    # потому, что весь musl-путь — docker на ARM-раннере, доступность реестров из Actions,
+    # apk add, сборка в контейнере — иначе впервые исполнялся бы в момент релиза, а падение
+    # любой строки матрицы блокирует release целиком.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.rehearse_publish
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest,     rid: linux-x64,        archive: tar.gz }
           - { os: ubuntu-24.04-arm,  rid: linux-arm64,      archive: tar.gz }
-          - { os: ubuntu-latest,     rid: linux-musl-x64,   archive: tar.gz, musl: true }
-          - { os: ubuntu-24.04-arm,  rid: linux-musl-arm64, archive: tar.gz, musl: true }
+          - { os: ubuntu-latest,     rid: linux-musl-x64,   archive: tar.gz }
+          - { os: ubuntu-24.04-arm,  rid: linux-musl-arm64, archive: tar.gz }
           - { os: macos-latest,      rid: osx-arm64,        archive: tar.gz }
           - { os: windows-latest,    rid: win-x64,          archive: zip    }
     runs-on: ${{ matrix.os }}
     env:
       # Образ для musl-сборок. Тег плавающий по патчам намеренно: global.json требует SDK
       # не ниже 10.0.201 при rollForward=latestFeature, и плавающий тег гарантирует это без
-      # ручного обновления. Воспроизводимость сборки здесь не пострадает: версия бинаря
-      # берётся из git-тега (MinVer), а не из окружения.
+      # ручного обновления. Обратная сторона — связь односторонняя: latestFeature катится
+      # только вперёд, поэтому подъём global.json до feature-полосы, которой в теге ещё нет,
+      # уронит именно musl-строки (glibc-строки ставят SDK через setup-dotnet и не заметят).
+      # Версия бинаря от плавающего тега не зависит: её даёт MinVer из git-тега.
       MUSL_SDK_IMAGE: mcr.microsoft.com/dotnet/sdk:10.0-alpine
-      # Голый Alpine для проверки запуска: важно, что бинарь стартует БЕЗ SDK и без gcompat.
-      MUSL_RUNTIME_IMAGE: alpine:3.22
+      # Проверка запуска идёт в образе БЕЗ SDK: важно, что бинарь стартует сам, без gcompat.
+      # Берём MCR, а не Docker Hub (alpine:3.x): анонимные pull'ы с Hub лимитируются по IP,
+      # а раннеры делят внешние адреса со всем миром — это был бы единственный лимитируемый
+      # реестр на релизном пути, причём на шаге, падение которого блокирует релиз.
+      MUSL_RUNTIME_IMAGE: mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Признак musl выводится из самого RID, а не из отдельного ключа матрицы: рассинхрон
+      # между ними означал бы glibc-бинарь под именем musl-артефакта, и поймать это было бы
+      # нечем — смоук-тест такой строки прошёл бы на glibc-раннере.
       - name: Setup .NET
-        if: ${{ !matrix.musl }}
+        if: ${{ !contains(matrix.rid, 'musl') }}
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
       - name: Publish (NativeAOT)
-        if: ${{ !matrix.musl }}
+        if: ${{ !contains(matrix.rid, 'musl') }}
         run: dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj -c Release -r ${{ matrix.rid }} --self-contained -o publish/${{ matrix.rid }}
 
       # NativeAOT линкует нативным тулчейном целевой платформы, поэтому musl-бинарь собирается
@@ -113,7 +132,7 @@ jobs:
       # actions выполняются node'ой, которую раннер монтирует внутрь контейнера, и в Alpine
       # это отдельная морока — здесь она не нужна, checkout и упаковка идут на хосте.
       - name: Publish (NativeAOT, musl in Alpine)
-        if: ${{ matrix.musl }}
+        if: ${{ contains(matrix.rid, 'musl') }}
         run: |
           docker run --rm \
             -v "$PWD":/src -w /src \
@@ -127,8 +146,7 @@ jobs:
             '
 
       - name: Read version
-        if: ${{ !matrix.musl }}
-        id: version
+        if: ${{ !contains(matrix.rid, 'musl') }}
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -136,20 +154,28 @@ jobs:
           else
             VERSION=$(./publish/${{ matrix.rid }}/yt --version)
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "${VERSION%%+*}" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::binary reports $VERSION, tag says $GITHUB_REF_NAME"
+            exit 1
+          fi
 
-      # Запуск в голом Alpine, без SDK и без gcompat — ровно тот сценарий, ради которого
+      # Запуск в musl-образе без SDK и без gcompat — ровно тот сценарий, ради которого
       # musl-артефакты и появились (issue #27). На glibc-раннере этот бинарь не стартует,
-      # поэтому проверять его шагом выше нельзя.
+      # поэтому проверять его шагом выше нельзя. Монтируем только каталог с бинарём и только
+      # на чтение: шагу нужно единственное — убедиться, что процесс поднимается.
       - name: Read version (musl in Alpine)
-        if: ${{ matrix.musl }}
-        id: version-musl
+        if: ${{ contains(matrix.rid, 'musl') }}
+        shell: bash
         run: |
-          VERSION=$(docker run --rm -v "$PWD":/src -w /src "$MUSL_RUNTIME_IMAGE" \
-            ./publish/${{ matrix.rid }}/yt --version)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          VERSION=$(docker run --rm \
+            -v "$PWD/publish/${{ matrix.rid }}":/app:ro -w /app \
+            "$MUSL_RUNTIME_IMAGE" ./yt --version)
           echo "Version: $VERSION"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "${VERSION%%+*}" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::binary reports $VERSION, tag says $GITHUB_REF_NAME"
+            exit 1
+          fi
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'

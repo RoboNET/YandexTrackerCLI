@@ -95,6 +95,8 @@ iwr https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 
 
 Сборки под musl нужны для Alpine и других образов на musl libc: glibc-бинарь там не запускается вовсе — ему нужен загрузчик `/lib64/ld-linux-*.so.2`, которого в системе нет. Обойти это можно пакетом `gcompat`, но с musl-архивом прослойка не требуется. На обычных дистрибутивах (Debian, Ubuntu, RHEL, Arch) берите glibc-вариант.
 
+musl-архивы собираются в образе `mcr.microsoft.com/dotnet/sdk:10.0-alpine` (сейчас это Alpine 3.24, musl 1.2.6) и проверяются запуском в образе без SDK и без `gcompat`. На заметно более старых musl-системах запуск не проверяется — если такая у вас, проверьте `yt --version` до того, как закладываться на бинарь.
+
 Также прилагается файл `SHA256SUMS` — для проверки целостности.
 
 ```bash
