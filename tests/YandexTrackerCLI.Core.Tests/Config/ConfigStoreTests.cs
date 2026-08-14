@@ -329,6 +329,40 @@ public sealed class ConfigStoreTests
     }
 
     /// <summary>
+    /// Колбэк вернул тот же снимок, который получил, — писать нечего, и файл не трогается.
+    /// Так вызывающие говорят «изменений нет», не платя атомарной перезаписью на горячем пути
+    /// (ротация refresh-токена приходит на каждый запрос).
+    /// </summary>
+    [Test]
+    public async Task ModifyAsync_WhenCallbackReturnsSameSnapshot_DoesNotRewriteFile()
+    {
+        var path = Path.Combine(CreateTempDir(), "config.json");
+        var store = new ConfigStore(path);
+        await store.SaveAsync(new ConfigFile("a", new() { ["a"] = Oauth("token-a") }));
+
+        // Содержимое при перезаписи было бы тем же, поэтому факт записи ловится по метке
+        // времени. Ставим её на сутки назад: тогда «записи не было» держится на том, что дата
+        // осталась ровно выставленной, а не на том, что две операции попали в разные тики
+        // часов — иначе на файловой системе с грубой гранулярностью (Windows, сетевые ФС)
+        // тест зеленел бы и со сломанным пропуском.
+        var before = File.ReadAllBytes(path);
+        var stamp = DateTime.UtcNow.AddDays(-1);
+        File.SetLastWriteTimeUtc(path, stamp);
+        stamp = File.GetLastWriteTimeUtc(path); // ФС могла округлить — сверяем с тем, что легло.
+
+        var result = await store.ModifyAsync(fresh => fresh);
+
+        await Assert.That(File.GetLastWriteTimeUtc(path)).IsEqualTo(stamp);
+        await Assert.That(File.ReadAllBytes(path)).IsEquivalentTo(before);
+        await Assert.That(result.Profiles["a"].Auth.Token).IsEqualTo("token-a");
+
+        // Новый экземпляр с тем же содержимым — это уже запись: пропуск только по ссылке.
+        // Расхождение с меткой будет в сутки, при любой гранулярности часов и ФС.
+        await store.ModifyAsync(fresh => new ConfigFile(fresh.DefaultProfile, fresh.Profiles));
+        await Assert.That(File.GetLastWriteTimeUtc(path)).IsGreaterThan(stamp.AddHours(12));
+    }
+
+    /// <summary>
     /// Каталог конфига только для чтения: наружу это обязано выйти структурной ошибкой
     /// <c>config_error</c>, а не необработанным <see cref="UnauthorizedAccessException"/> —
     /// команды ловят только <see cref="TrackerException"/>.

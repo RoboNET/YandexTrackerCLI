@@ -43,11 +43,48 @@ public sealed class FederatedRefreshRotationTests
     /// </summary>
     private sealed class FailingSink : IRefreshTokenSink
     {
-        public Task SaveRefreshToken(string refreshToken, CancellationToken ct) =>
+        public Task SaveRefreshToken(string expectedCurrentToken, string refreshToken, CancellationToken ct) =>
             Task.FromException(new IOException("config file is not writable"));
     }
 
-    private static string FedConfig(string root, string refreshToken) =>
+    /// <summary>
+    /// Refresh-клиент, который перед возвратом ответа переписывает конфиг на диске —
+    /// так моделируется чужой запуск, успевший поменять профиль между сетевым обменом
+    /// и записью нашего стока.
+    /// </summary>
+    private sealed class RewritingRefresh : IFederatedRefreshClient
+    {
+        private readonly FederatedTokenResult _result;
+        private readonly string _configPath;
+        private readonly string _newContent;
+
+        public RewritingRefresh(FederatedTokenResult result, string configPath, string newContent)
+        {
+            _result = result;
+            _configPath = configPath;
+            _newContent = newContent;
+        }
+
+        public Task<FederatedTokenResult> Refresh(string refreshToken, string clientId, ECDsa key, CancellationToken ct)
+        {
+            File.WriteAllText(_configPath, _newContent);
+            return Task.FromResult(_result);
+        }
+    }
+
+    private static async Task<JsonDocument> AssertWarnedAndSucceeded(StringWriter stdout, StringWriter stderr, int exit)
+    {
+        await Assert.That(exit).IsEqualTo(0);
+        using var body = JsonDocument.Parse(stdout.ToString());
+        await Assert.That(body.RootElement.GetProperty("login").GetString()).IsEqualTo("me");
+
+        var warningLine = stderr.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Single(l => l.Contains("refresh_token_not_saved", StringComparison.Ordinal));
+        return JsonDocument.Parse(warningLine);
+    }
+
+    private static string FedConfig(string root, string refreshToken, string accessToken = "old-access") =>
         $$"""
           {
             "default_profile": "other",
@@ -60,7 +97,7 @@ public sealed class FederatedRefreshRotationTests
                 "org_type": "cloud", "org_id": "o1", "read_only": false, "default_format": "json",
                 "allowed_queues": [ "DEV" ],
                 "auth": {
-                  "type": "federated", "token": "old-access", "refresh_token": "{{refreshToken}}",
+                  "type": "federated", "token": "{{accessToken}}", "refresh_token": "{{refreshToken}}",
                   "federation_id": "fed-1", "dpop_key_path": "{{root.Replace("\\", "/")}}/dpop.pem",
                   "access_token_expires_at": "2020-01-01T00:00:00.0000000+00:00"
                 }
@@ -175,5 +212,109 @@ public sealed class FederatedRefreshRotationTests
         await Assert.That(w.GetProperty("code").GetString()).IsEqualTo("refresh_token_not_saved");
         await Assert.That(w.GetProperty("message").GetString()!).Contains("re-login");
         await Assert.That(w.GetProperty("reason").GetString()!).Contains("not writable");
+    }
+
+    /// <summary>
+    /// Пока шёл обмен, в другом терминале сделали <c>yt auth relogin</c>: на диске уже лежит
+    /// более новый refresh-токен вместе со своим access-токеном. Наш (уже устаревший) токен
+    /// не должен лечь поверх — иначе профиль остался бы наполовину от одной сессии,
+    /// наполовину от другой, а свежий токен пропал бы молча.
+    /// </summary>
+    [Test]
+    public async Task ProfileReAuthenticatedMeanwhile_KeepsNewerToken_AndWarns()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(FedConfig(env.Root, "rt-old"));
+        env.InnerHandler = ApiOk();
+
+        TrackerContextFactory.TestFederatedRefreshOverride.Value = new RewritingRefresh(
+            new FederatedTokenResult("iam-fresh", "rt-A", DateTimeOffset.UtcNow.AddHours(1)),
+            env.ConfigPath,
+            FedConfig(env.Root, "rt-B", accessToken: "access-B"));
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "--profile", "fed", "user", "me" }, sw, er);
+
+        using var warning = await AssertWarnedAndSucceeded(sw, er, exit);
+        await Assert.That(warning.RootElement.GetProperty("warning").GetProperty("reason").GetString()!)
+            .Contains("re-authenticated by another run");
+
+        // Свежая сессия на диске цела целиком: и refresh-, и access-токен от неё.
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var auth = saved.RootElement.GetProperty("profiles").GetProperty("fed").GetProperty("auth");
+        await Assert.That(auth.GetProperty("refresh_token").GetString()).IsEqualTo("rt-B");
+        await Assert.That(auth.GetProperty("token").GetString()).IsEqualTo("access-B");
+    }
+
+    /// <summary>
+    /// Профиль удалили, пока шёл обмен, — сток не воскрешает его записью токена.
+    /// </summary>
+    [Test]
+    public async Task ProfileRemovedMeanwhile_IsNotRecreated_AndWarns()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(FedConfig(env.Root, "rt-old"));
+        env.InnerHandler = ApiOk();
+
+        const string WithoutFed =
+            """
+            {
+              "default_profile": "other",
+              "profiles": {
+                "other": {
+                  "org_type": "yandex360", "org_id": "other-org", "read_only": false,
+                  "auth": { "type": "oauth", "token": "other-token" }
+                }
+              }
+            }
+            """;
+
+        TrackerContextFactory.TestFederatedRefreshOverride.Value = new RewritingRefresh(
+            new FederatedTokenResult("iam-fresh", "rt-rotated", DateTimeOffset.UtcNow.AddHours(1)),
+            env.ConfigPath,
+            WithoutFed);
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "--profile", "fed", "user", "me" }, sw, er);
+
+        using var warning = await AssertWarnedAndSucceeded(sw, er, exit);
+        await Assert.That(warning.RootElement.GetProperty("warning").GetProperty("reason").GetString()!)
+            .Contains("no longer present");
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        await Assert.That(saved.RootElement.GetProperty("profiles").TryGetProperty("fed", out _)).IsFalse();
+    }
+
+    /// <summary>
+    /// Профиль пересоздали под другую федерацию — токен от прежней в него не пишется.
+    /// </summary>
+    [Test]
+    public async Task ProfileReplacedByAnotherFederation_IsNotOverwritten_AndWarns()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(FedConfig(env.Root, "rt-old"));
+        env.InnerHandler = ApiOk();
+
+        var replaced = FedConfig(env.Root, "rt-other-fed").Replace("\"federation_id\": \"fed-1\"", "\"federation_id\": \"fed-2\"", StringComparison.Ordinal);
+
+        TrackerContextFactory.TestFederatedRefreshOverride.Value = new RewritingRefresh(
+            new FederatedTokenResult("iam-fresh", "rt-rotated", DateTimeOffset.UtcNow.AddHours(1)),
+            env.ConfigPath,
+            replaced);
+
+        var sw = new StringWriter();
+        var er = new StringWriter();
+        var exit = await env.Invoke(new[] { "--profile", "fed", "user", "me" }, sw, er);
+
+        using var warning = await AssertWarnedAndSucceeded(sw, er, exit);
+        await Assert.That(warning.RootElement.GetProperty("warning").GetProperty("reason").GetString()!)
+            .Contains("changed while the token was being refreshed");
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(env.ConfigPath));
+        var auth = saved.RootElement.GetProperty("profiles").GetProperty("fed").GetProperty("auth");
+        await Assert.That(auth.GetProperty("refresh_token").GetString()).IsEqualTo("rt-other-fed");
+        await Assert.That(auth.GetProperty("federation_id").GetString()).IsEqualTo("fed-2");
     }
 }

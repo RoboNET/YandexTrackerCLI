@@ -168,17 +168,24 @@ public interface IFederatedReloginHandler
 public interface IRefreshTokenSink
 {
     /// <summary>
-    /// Persists <paramref name="refreshToken"/> as the profile's current refresh token.
+    /// Persists <paramref name="refreshToken"/> as the profile's current refresh token,
+    /// but only if the stored token is still <paramref name="expectedCurrentToken"/>.
     /// </summary>
+    /// <param name="expectedCurrentToken">
+    /// The refresh token that was presented to the server for this exchange — i.e. the value
+    /// the profile is expected to still hold. Implementations must compare-and-swap against
+    /// it: anything else on disk means another run has moved the profile on since, and its
+    /// token is the live one.
+    /// </param>
     /// <param name="refreshToken">The freshly issued (rotated) refresh token.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A task that completes when the token has been written.</returns>
     /// <remarks>
     /// Called on the request hot path, only when the value actually changed. Implementations
-    /// may throw: the caller treats a failed save as non-fatal (the access token in hand is
-    /// still valid) and reports it as a warning.
+    /// may throw — including when the compare-and-swap fails: the caller treats a failed save
+    /// as non-fatal (the access token in hand is still valid) and reports it as a warning.
     /// </remarks>
-    Task SaveRefreshToken(string refreshToken, CancellationToken ct);
+    Task SaveRefreshToken(string expectedCurrentToken, string refreshToken, CancellationToken ct);
 }
 
 /// <summary>
@@ -198,6 +205,7 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     private readonly IFederatedReloginHandler? _relogin;
     private readonly string? _reloginCommandHint;
     private readonly IRefreshTokenSink? _refreshTokenSink;
+    private readonly TextWriter? _warningWriter;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     // Mutable refresh token: both a rotating federation (new token on every exchange) and
@@ -230,6 +238,11 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     /// refresh. When omitted, a rotated token is still adopted for this process but is lost
     /// on exit — the next run would start from the (now dead) token on disk.
     /// </param>
+    /// <param name="warningWriter">
+    /// Where the "refresh token not saved" warning goes; <c>null</c> selects
+    /// <see cref="Console.Error"/>, resolved at write time. Tests inject their own writer so
+    /// that a warning never lands in the process-global stderr other tests capture.
+    /// </param>
     public FederatedTokenProvider(
         string cacheKey,
         ECDsa key,
@@ -239,7 +252,8 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
         string clientId,
         IFederatedReloginHandler? relogin = null,
         string? reloginCommandHint = null,
-        IRefreshTokenSink? refreshTokenSink = null)
+        IRefreshTokenSink? refreshTokenSink = null,
+        TextWriter? warningWriter = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheKey);
         ArgumentNullException.ThrowIfNull(key);
@@ -257,6 +271,7 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
         _relogin = relogin;
         _reloginCommandHint = reloginCommandHint;
         _refreshTokenSink = refreshTokenSink;
+        _warningWriter = warningWriter;
     }
 
     /// <inheritdoc />
@@ -283,14 +298,10 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
             }
 
             FederatedTokenResult result;
+            var fromRelogin = false;
             try
             {
                 result = await _refresh.Refresh(_refreshToken, _clientId, _key, ct);
-
-                // The federation may rotate the refresh token on every exchange: the one we
-                // just sent is then already dead server-side, and the replacement exists only
-                // in this response. Adopt it in memory and push it to disk.
-                await AdoptRotatedRefreshToken(result.RefreshToken, ct);
             }
             catch (TrackerException ex) when (ex.Code == ErrorCode.AuthFailed)
             {
@@ -310,13 +321,30 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
                 // Interactive TTY: re-run the browser flow inline, adopt the new refresh token
                 // for any later refresh in this process, then serve the fresh access token.
                 result = await _relogin.ReloginAsync(ct);
+                fromRelogin = true;
                 if (!string.IsNullOrEmpty(result.RefreshToken))
                 {
                     _refreshToken = result.RefreshToken!;
                 }
             }
 
+            // Cache the access token BEFORE persisting the rotated refresh token, and do not
+            // reorder these two. The access token has already been paid for by the network
+            // exchange that also burned the previous refresh token; if cancellation lands
+            // between them, the cached access token still carries this process (and the next
+            // one) to the end, whereas losing it would leave nothing usable anywhere: the old
+            // refresh token is dead server-side and the new one is only in memory.
             await _cache.SetAsync(_cacheKey, result.AccessToken, result.ExpiresAt, ct);
+
+            if (!fromRelogin)
+            {
+                // The federation may rotate the refresh token on every exchange: the one we
+                // just sent is then already dead server-side, and the replacement exists only
+                // in this response. Adopt it in memory and push it to disk. (After a re-login
+                // the profile has already been written by FederatedReloginService.)
+                await AdoptRotatedRefreshToken(result.RefreshToken, ct);
+            }
+
             return new AuthenticationHeaderValue("Bearer", result.AccessToken);
         }
         finally
@@ -341,13 +369,15 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     /// <para>
     /// <b>Known limitation — concurrent <c>yt</c> processes.</b> Two invocations may refresh at
     /// the same time; a rotating federation issues a different refresh token to each, and only
-    /// the last write survives on disk. The loser's token is then the live one for nobody and
-    /// the profile is left holding a token that has already been superseded, so the next run
-    /// falls back to re-login. The config lock cannot fix this: the race is on the server, which
-    /// invalidated the shared predecessor before either process reached the file. Serializing it
-    /// would require holding the lock across the whole network exchange — every <c>yt</c>
-    /// blocking on every other one's token refresh — which is a worse trade than an occasional
-    /// re-login.
+    /// one of them can be on disk afterwards. The save is a compare-and-swap against the token
+    /// this process presented, so the second writer does not clobber the first: it finds a token
+    /// it did not expect, declines and warns. The user may still face a re-login — the token
+    /// left on disk may not be the one the server considers live — but the profile is never left
+    /// in a mixed state, and the outcome is reported instead of being silently written over. The
+    /// config lock cannot fix the race itself: it happens on the server, which invalidated the
+    /// shared predecessor before either process reached the file. Serializing it would require
+    /// holding the lock across the whole network exchange — every <c>yt</c> blocking on every
+    /// other one's token refresh — which is a worse trade than an occasional re-login.
     /// </para>
     /// </remarks>
     private async Task AdoptRotatedRefreshToken(string? newToken, CancellationToken ct)
@@ -357,6 +387,11 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
             return;
         }
 
+        // Read the outgoing token from the field, not from a value captured at construction:
+        // this is the token just presented to the server, and on a second rotation in the same
+        // process that is the previous rotation's result, not the one the process started with.
+        // A stale expectation here would make every save after the first one a no-op.
+        var presentedToken = _refreshToken;
         _refreshToken = newToken;
 
         if (_refreshTokenSink is null)
@@ -366,7 +401,7 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
 
         try
         {
-            await _refreshTokenSink.SaveRefreshToken(newToken, ct);
+            await _refreshTokenSink.SaveRefreshToken(presentedToken, newToken, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -385,31 +420,18 @@ public sealed class FederatedTokenProvider : IAuthProvider, IDisposable
     }
 
     /// <summary>
-    /// Emits a structured warning JSON line on <see cref="Console.Error"/> reporting that a
-    /// rotated refresh token could not be persisted. Shape mirrors the error envelope
-    /// (single object with a top-level <c>warning</c> key) so jq/agents can consume it.
+    /// Emits the structured warning reporting that a rotated refresh token could not be
+    /// persisted, on the injected writer or <see cref="Console.Error"/> by default.
     /// </summary>
     /// <param name="reason">Human-readable reason from the failed save.</param>
-    private static void WriteRefreshTokenNotSavedWarning(string reason)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteStartObject("warning");
-            w.WriteString("code", "refresh_token_not_saved");
-            w.WriteString(
-                "message",
-                "The server issued a new refresh_token, but it could not be saved to the profile. "
-                + "The current command is unaffected; a later run may require re-login "
-                + "(yt auth relogin).");
-            w.WriteString("reason", reason);
-            w.WriteEndObject();
-            w.WriteEndObject();
-        }
-
-        Console.Error.WriteLine(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
-    }
+    private void WriteRefreshTokenNotSavedWarning(string reason) =>
+        Output.WarningWriter.Write(
+            _warningWriter ?? Console.Error,
+            "refresh_token_not_saved",
+            "The server issued a new refresh_token, but it could not be saved to the profile. "
+            + "The current command is unaffected; a later run may require re-login "
+            + "(yt auth relogin).",
+            ("reason", reason));
 
     /// <summary>
     /// Releases internal synchronization primitives. Does NOT dispose the ECDSA key —

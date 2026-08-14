@@ -506,11 +506,13 @@ public static class TrackerContextFactory
 /// the profile's policy and org settings, its access token and DPoP key path — untouched.
 /// </summary>
 /// <remarks>
-/// The write goes through <see cref="ConfigStore.ModifyAsync(Func{ConfigFile, ConfigFile}, CancellationToken)"/>,
+/// The write goes through <see cref="ConfigStore.ModifyAsync(Func{ConfigFile, ConfigFile}, TimeSpan?, CancellationToken)"/>,
 /// which re-reads the file under the cross-process lock, so a parallel <c>yt</c> editing an
-/// unrelated part of the config does not lose its update. What the lock cannot prevent is two
-/// processes refreshing the same profile at once — see the remarks on the caller in
-/// <c>FederatedTokenProvider</c>.
+/// unrelated part of the config does not lose its update. The lock cannot prevent two processes
+/// from refreshing the same profile at once — see the remarks on the caller in
+/// <c>FederatedTokenProvider</c> — so the write is additionally a compare-and-swap on the
+/// refresh token itself: if the profile no longer holds the token this exchange was started
+/// from, someone else has moved it on and this (older) token must not land on top.
 /// </remarks>
 internal sealed class ProfileRefreshTokenSink : IRefreshTokenSink
 {
@@ -533,13 +535,10 @@ internal sealed class ProfileRefreshTokenSink : IRefreshTokenSink
     }
 
     /// <inheritdoc />
-    public async Task SaveRefreshToken(string refreshToken, CancellationToken ct)
+    public async Task SaveRefreshToken(string expectedCurrentToken, string refreshToken, CancellationToken ct)
     {
         var store = new ConfigStore(ConfigStore.DefaultPath);
 
-        // Default (short) lock timeout on purpose: this runs inside a user-facing request, and
-        // the caller treats failure as a warning. Waiting out a long-held lock here would stall
-        // the command for the benefit of a write it can live without.
         await store.ModifyAsync(
             fresh =>
             {
@@ -561,8 +560,24 @@ internal sealed class ProfileRefreshTokenSink : IRefreshTokenSink
 
                 if (string.Equals(current.Auth.RefreshToken, refreshToken, StringComparison.Ordinal))
                 {
-                    // Someone already wrote exactly this; skip the rewrite.
+                    // Already exactly this token on disk: nothing to write. Returning the
+                    // snapshot unchanged tells ModifyAsync to skip the rewrite entirely.
                     return fresh;
+                }
+
+                if (!string.Equals(current.Auth.RefreshToken, expectedCurrentToken, StringComparison.Ordinal))
+                {
+                    // Compare-and-swap failed: between the exchange and this write another run
+                    // (a parallel refresh, or `yt auth relogin` in a second terminal) replaced
+                    // the profile's credentials. Its refresh token is newer than the one in
+                    // hand, and it came with a matching access token and expiry. Writing here
+                    // would bury a live token under a superseded one and leave the profile
+                    // half from one session, half from another — silently, since the write
+                    // itself would succeed. Refusing costs at most one re-login, and says so.
+                    throw new TrackerException(
+                        ErrorCode.ConfigError,
+                        $"Profile '{_profileName}' was re-authenticated by another run while this "
+                        + "token was being refreshed; its refresh token is newer and was kept.");
                 }
 
                 var profiles = new Dictionary<string, Core.Config.Profile>(fresh.Profiles)
@@ -571,6 +586,10 @@ internal sealed class ProfileRefreshTokenSink : IRefreshTokenSink
                 };
                 return new ConfigFile(fresh.DefaultProfile, profiles);
             },
+            // Between the ten-second default and the minute used after an interactive login:
+            // the credential at stake is just as irreplaceable as there, but the wait lands in
+            // the middle of an ordinary command. See ConfigStore.RotatedTokenLockTimeout.
+            ConfigStore.RotatedTokenLockTimeout,
             ct);
     }
 }

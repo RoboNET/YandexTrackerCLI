@@ -35,6 +35,23 @@ public sealed class ConfigStore
     /// </remarks>
     public static readonly TimeSpan PostAuthLockTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// Lock timeout for persisting a refresh token the server rotated during an ordinary
+    /// command — between <see cref="DefaultLockTimeout"/> and <see cref="PostAuthLockTimeout"/>.
+    /// </summary>
+    /// <remarks>
+    /// The stake is the same as after an interactive login: the presented refresh token is
+    /// already dead server-side and its replacement exists only in this process, so losing the
+    /// write costs the user a browser re-login later. That argues for waiting long. What argues
+    /// against a full minute is where this happens: inside a regular command the user is waiting
+    /// on, not after a browser flow that has already taken minutes — a stuck lock would turn a
+    /// one-second <c>yt issue get</c> into a minute of apparent hang. Twenty seconds outlasts
+    /// any healthy holder (config writes are sub-second) while keeping the worst case within
+    /// what a user reads as "slow" rather than "frozen". Both sides genuinely lose something
+    /// here; this picks the smaller loss, it does not remove either.
+    /// </remarks>
+    public static readonly TimeSpan RotatedTokenLockTimeout = TimeSpan.FromSeconds(20);
+
     private readonly string _path;
     private readonly TimeSpan _lockTimeout;
 
@@ -113,7 +130,8 @@ public sealed class ConfigStore
     /// <summary>
     /// Atomically applies an update to the configuration: takes the cross-process lock,
     /// re-reads the file from disk <b>inside</b> the lock, applies <paramref name="mutate"/>
-    /// to that fresh snapshot, writes the result and releases the lock.
+    /// to that fresh snapshot, writes the result (unless the callback returned that same
+    /// snapshot, meaning there is nothing to write) and releases the lock.
     /// </summary>
     /// <param name="mutate">
     /// Transformation from the on-disk configuration to the one to persist. It runs while the
@@ -121,7 +139,10 @@ public sealed class ConfigStore
     /// the browser login flow, for example, has to complete <em>before</em> this call.
     /// </param>
     /// <param name="ct">The cancellation token.</param>
-    /// <returns>The configuration that was written.</returns>
+    /// <returns>
+    /// The resulting configuration — written to disk unless <paramref name="mutate"/> returned
+    /// the snapshot it was given unchanged, which is how a callback says "nothing to write".
+    /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="mutate"/> is <c>null</c>.</exception>
     /// <exception cref="Api.Errors.TrackerException">
     /// <see cref="Api.Errors.ErrorCode.ConfigError"/> — the lock could not be acquired in time.
@@ -141,7 +162,10 @@ public sealed class ConfigStore
     /// session that cost the user a browser round-trip.
     /// </param>
     /// <param name="ct">The cancellation token.</param>
-    /// <returns>The configuration that was written.</returns>
+    /// <returns>
+    /// The resulting configuration — written to disk unless <paramref name="mutate"/> returned
+    /// the snapshot it was given unchanged, which is how a callback says "nothing to write".
+    /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="mutate"/> is <c>null</c>.</exception>
     /// <exception cref="Api.Errors.TrackerException">
     /// <see cref="Api.Errors.ErrorCode.ConfigError"/> — the lock could not be acquired in time.
@@ -217,6 +241,18 @@ public sealed class ConfigStore
         if (update.Config is null)
         {
             throw new ArgumentException("The mutate callback returned a null configuration.", nameof(mutate));
+        }
+
+        if (ReferenceEquals(update.Config, current))
+        {
+            // The callback handed back the very snapshot it was given: it decided there is
+            // nothing to change. Rewriting the file with identical bytes would still cost an
+            // atomic write on a hot path, so "return the input" is how a callback says "no
+            // write". Reference equality, not structural: a callback that rebuilt an
+            // equal-looking configuration still gets it written, and only one that mutated the
+            // snapshot in place could lose an update this way — which the models rule out,
+            // being records over dictionaries the callers copy.
+            return update;
         }
 
         await SaveAsync(update.Config, ct);
