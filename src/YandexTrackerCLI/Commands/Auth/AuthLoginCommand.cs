@@ -510,28 +510,15 @@ public static class AuthLoginCommand
 
     /// <summary>
     /// Emits a structured warning JSON line on <see cref="Console.Error"/> describing the
-    /// degraded "no refresh_token" mode. Format mirrors the error envelope so existing
-    /// JSON parsers (jq, agents) can consume it: a single object with a top-level
-    /// <c>warning</c> key and stable fields under it.
+    /// degraded "no refresh_token" mode.
     /// </summary>
-    internal static void WriteNoRefreshTokenWarning(string accessTokenExpiresAtIso)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
-        {
-            w.WriteStartObject();
-            w.WriteStartObject("warning");
-            w.WriteString("code", "no_refresh_token");
-            w.WriteString(
-                "message",
-                "Server did not issue a refresh_token. Re-login will be required after access token expires (~12h).");
-            w.WriteString("access_token_expires_at", accessTokenExpiresAtIso);
-            w.WriteEndObject();
-            w.WriteEndObject();
-        }
-
-        Console.Error.WriteLine(Encoding.UTF8.GetString(ms.ToArray()));
-    }
+    /// <param name="accessTokenExpiresAtIso">Access token expiry (ISO-8601), reported to the caller.</param>
+    internal static void WriteNoRefreshTokenWarning(string accessTokenExpiresAtIso) =>
+        WarningWriter.Write(
+            Console.Error,
+            "no_refresh_token",
+            "Server did not issue a refresh_token. Re-login will be required after access token expires (~12h).",
+            ("access_token_expires_at", accessTokenExpiresAtIso));
 
     /// <summary>
     /// Emits the federated-login success-marker on <see cref="Console.Out"/>:

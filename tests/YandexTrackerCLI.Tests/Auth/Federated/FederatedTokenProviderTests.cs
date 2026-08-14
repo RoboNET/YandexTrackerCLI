@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using TUnit.Core;
 using YandexTrackerCLI.Auth.Federated;
 using Http;
@@ -81,6 +82,243 @@ public sealed class FederatedTokenProviderTests
         await Assert.That(fake.CallCount).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// Refresh-клиент, который записывает предъявленные ему refresh-токены и отдаёт
+    /// заранее заданные ответы по одному на вызов.
+    /// </summary>
+    private sealed class ScriptedRefresh : IFederatedRefreshClient
+    {
+        private readonly Queue<FederatedTokenResult> _results;
+
+        public ScriptedRefresh(params FederatedTokenResult[] results) => _results = new Queue<FederatedTokenResult>(results);
+
+        public List<string> SeenRefreshTokens { get; } = new();
+
+        public Task<FederatedTokenResult> Refresh(string refreshToken, string clientId, ECDsa key, CancellationToken ct)
+        {
+            SeenRefreshTokens.Add(refreshToken);
+            return Task.FromResult(_results.Dequeue());
+        }
+    }
+
+    /// <summary>
+    /// Сток, записывающий все сохранённые refresh-токены вместе с ожидаемым предыдущим
+    /// (compare-and-swap); опционально падает при сохранении.
+    /// </summary>
+    private sealed class RecordingSink : IRefreshTokenSink
+    {
+        private readonly bool _throws;
+
+        public RecordingSink(bool throws = false) => _throws = throws;
+
+        public List<string> Saved { get; } = new();
+
+        public List<(string Expected, string New)> Calls { get; } = new();
+
+        public Task SaveRefreshToken(string expectedCurrentToken, string refreshToken, CancellationToken ct)
+        {
+            Saved.Add(refreshToken);
+            Calls.Add((expectedCurrentToken, refreshToken));
+            return _throws
+                ? Task.FromException(new IOException("config is not writable"))
+                : Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Сервер провернул refresh-токен: новый уходит в сток и используется следующим
+    /// обновлением в этом же процессе, а не исходный (тот уже мёртв на стороне сервера).
+    /// </summary>
+    [Test]
+    public async Task RotatedRefreshToken_IsSaved_AndUsedByNextRefresh()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+
+        // Первый access-токен истекает сразу (внутри 60-секундного leeway кеша),
+        // поэтому второй запрос авторизации снова идёт на refresh.
+        var refresh = new ScriptedRefresh(
+            new FederatedTokenResult("iam-1", "rt-rotated-1", DateTimeOffset.UtcNow),
+            new FederatedTokenResult("iam-2", "rt-rotated-2", DateTimeOffset.UtcNow.AddHours(1)));
+        var sink = new RecordingSink();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            refreshTokenSink: sink);
+
+        var h1 = await provider.GetAuthorizationAsync(CancellationToken.None);
+        var h2 = await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(h1.Parameter).IsEqualTo("iam-1");
+        await Assert.That(h2.Parameter).IsEqualTo("iam-2");
+        await Assert.That(refresh.SeenRefreshTokens).IsEquivalentTo(new[] { "rt-original", "rt-rotated-1" });
+        await Assert.That(sink.Saved).IsEquivalentTo(new[] { "rt-rotated-1", "rt-rotated-2" });
+
+        // Compare-and-swap: вторая ротация ожидает на диске результат первой, а не токен,
+        // с которым процесс стартовал. Ожидание из конструктора обнулило бы вторую запись —
+        // сток отказался бы писать, потому что «на диске не то, что предъявляли серверу».
+        await Assert.That(sink.Calls).IsEquivalentTo(new[]
+        {
+            ("rt-original", "rt-rotated-1"),
+            ("rt-rotated-1", "rt-rotated-2"),
+        });
+    }
+
+    /// <summary>
+    /// Тот же refresh-токен в ответе — сохранять нечего: запись на горячем пути не делается.
+    /// </summary>
+    [Test]
+    public async Task UnchangedRefreshToken_IsNotSaved()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new ScriptedRefresh(
+            new FederatedTokenResult("iam-1", "rt-original", DateTimeOffset.UtcNow.AddHours(1)));
+        var sink = new RecordingSink();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            refreshTokenSink: sink);
+
+        var h = await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(h.Parameter).IsEqualTo("iam-1");
+        await Assert.That(sink.Saved.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Сервер не вернул refresh_token вовсе (нерotирующая федерация) — тоже без записи,
+    /// и в памяти остаётся исходный токен.
+    /// </summary>
+    [Test]
+    public async Task MissingRefreshTokenInResponse_KeepsOriginal_AndSavesNothing()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new ScriptedRefresh(
+            new FederatedTokenResult("iam-1", null, DateTimeOffset.UtcNow),
+            new FederatedTokenResult("iam-2", null, DateTimeOffset.UtcNow.AddHours(1)));
+        var sink = new RecordingSink();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            refreshTokenSink: sink);
+
+        await provider.GetAuthorizationAsync(CancellationToken.None);
+        await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(refresh.SeenRefreshTokens).IsEquivalentTo(new[] { "rt-original", "rt-original" });
+        await Assert.That(sink.Saved.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Отказ сохранения — fail-soft: access-токен на руках валиден, авторизация выдаётся,
+    /// а провёрнутый токен всё равно используется дальше в этом процессе. Предупреждение
+    /// уходит в переданный writer, а не в процесс-глобальный <c>Console.Error</c>, который
+    /// перехватывают параллельные CLI-тесты.
+    /// </summary>
+    [Test]
+    public async Task SinkFailure_DoesNotFailAuthorization()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new ScriptedRefresh(
+            new FederatedTokenResult("iam-1", "rt-rotated", DateTimeOffset.UtcNow),
+            new FederatedTokenResult("iam-2", "rt-rotated", DateTimeOffset.UtcNow.AddHours(1)));
+        var sink = new RecordingSink(throws: true);
+        var warnings = new StringWriter();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            refreshTokenSink: sink,
+            warningWriter: warnings);
+
+        var h1 = await provider.GetAuthorizationAsync(CancellationToken.None);
+        var h2 = await provider.GetAuthorizationAsync(CancellationToken.None);
+
+        await Assert.That(h1.Parameter).IsEqualTo("iam-1");
+        await Assert.That(h2.Parameter).IsEqualTo("iam-2");
+        await Assert.That(refresh.SeenRefreshTokens).IsEquivalentTo(new[] { "rt-original", "rt-rotated" });
+
+        var line = warnings.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Single();
+        using var warning = JsonDocument.Parse(line);
+        var w = warning.RootElement.GetProperty("warning");
+        await Assert.That(w.GetProperty("code").GetString()).IsEqualTo("refresh_token_not_saved");
+        await Assert.That(w.GetProperty("reason").GetString()!).Contains("not writable");
+    }
+
+    /// <summary>
+    /// Сток, отменяющий команду ровно в момент сохранения — Ctrl-C между сетевым обменом
+    /// и записью на диск.
+    /// </summary>
+    private sealed class CancellingSink : IRefreshTokenSink
+    {
+        private readonly CancellationTokenSource _cts;
+
+        public CancellingSink(CancellationTokenSource cts) => _cts = cts;
+
+        public Task SaveRefreshToken(string expectedCurrentToken, string refreshToken, CancellationToken ct)
+        {
+            _cts.Cancel();
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// Отмена во время сохранения refresh-токена не должна забирать с собой свежий
+    /// access-токен: он уже оплачен сетевым обменом, который сжёг предыдущий refresh-токен.
+    /// Поэтому access кладётся в кеш до записи стока, и после Ctrl-C им ещё можно
+    /// воспользоваться — иначе одно нажатие здесь гарантировало бы браузерный перелогин.
+    /// </summary>
+    [Test]
+    public async Task CancellationDuringSave_KeepsAccessTokenInCache()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var cache = new TokenCache(Path.Combine(Path.GetTempPath(), "yt-fed-" + Guid.NewGuid() + ".json"));
+        var refresh = new ScriptedRefresh(
+            new FederatedTokenResult("iam-1", "rt-rotated", DateTimeOffset.UtcNow.AddHours(1)));
+        using var cts = new CancellationTokenSource();
+
+        using var provider = new FederatedTokenProvider(
+            "ci:federated:fed-1",
+            key,
+            cache,
+            refresh,
+            refreshToken: "rt-original",
+            clientId: "yc.oauth.public-sdk",
+            refreshTokenSink: new CancellingSink(cts));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => provider.GetAuthorizationAsync(cts.Token));
+
+        var cached = await cache.GetAsync("ci:federated:fed-1", ct: CancellationToken.None);
+        await Assert.That(cached).IsNotNull();
+        await Assert.That(cached!.Token).IsEqualTo("iam-1");
+    }
+
     private sealed class FailingRefresh : IFederatedRefreshClient
     {
         public int CallCount { get; private set; }
@@ -114,6 +352,7 @@ public sealed class FederatedTokenProviderTests
         var refresh = new FailingRefresh();
         var relogin = new FakeReloginHandler(
             new FederatedTokenResult("iam-after-relogin", "rt-fresh", DateTimeOffset.UtcNow.AddHours(1)));
+        var sink = new RecordingSink();
 
         using var provider = new FederatedTokenProvider(
             "ci:federated:fed-1",
@@ -123,7 +362,8 @@ public sealed class FederatedTokenProviderTests
             refreshToken: "rt-expired",
             clientId: "yc.oauth.public-sdk",
             relogin: relogin,
-            reloginCommandHint: "yt auth relogin --profile ci");
+            reloginCommandHint: "yt auth relogin --profile ci",
+            refreshTokenSink: sink);
 
         var h = await provider.GetAuthorizationAsync(CancellationToken.None);
 
@@ -131,6 +371,10 @@ public sealed class FederatedTokenProviderTests
         await Assert.That(h.Parameter).IsEqualTo("iam-after-relogin");
         await Assert.That(refresh.CallCount).IsEqualTo(1);
         await Assert.That(relogin.CallCount).IsEqualTo(1);
+
+        // Ветка перелогина сохраняет профиль сама (FederatedReloginService), поэтому сток
+        // здесь не дёргается — иначе один и тот же токен писался бы дважды.
+        await Assert.That(sink.Saved.Count).IsEqualTo(0);
 
         // Second call hits the cache populated by the relogin result — no extra relogin.
         var h2 = await provider.GetAuthorizationAsync(CancellationToken.None);

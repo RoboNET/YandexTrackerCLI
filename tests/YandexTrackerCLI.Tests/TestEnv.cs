@@ -187,6 +187,7 @@ internal sealed class TestEnv : IDisposable
         TrackerContextFactory.TestFederatedRefreshOverride.Value = null;
         TrackerContextFactory.TestInteractiveOverride.Value = null;
         TrackerContextFactory.TestReloginHandlerOverride.Value = null;
+        TrackerContextFactory.TestRefreshTokenSinkOverride.Value = null;
         YandexTrackerCLI.Auth.Federated.FederatedReloginService.TestBrowserLauncher.Value = null;
         YandexTrackerCLI.Auth.Federated.FederatedReloginService.TestFederatedHttpClient.Value = null;
         YandexTrackerCLI.Commands.Auth.AuthLoginCommand.TestBrowserLauncher.Value = null;
