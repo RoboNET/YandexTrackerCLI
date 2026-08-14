@@ -86,10 +86,14 @@ iwr https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 
 
 | Платформа | Архив |
 |---|---|
-| Linux x86_64 | `yt-linux-x64.tar.gz` |
-| Linux ARM64 | `yt-linux-arm64.tar.gz` |
+| Linux x86_64 (glibc) | `yt-linux-x64.tar.gz` |
+| Linux ARM64 (glibc) | `yt-linux-arm64.tar.gz` |
+| Linux x86_64 (musl: Alpine) | `yt-linux-musl-x64.tar.gz` |
+| Linux ARM64 (musl: Alpine) | `yt-linux-musl-arm64.tar.gz` |
 | macOS Apple Silicon | `yt-osx-arm64.tar.gz` |
 | Windows x86_64 | `yt-win-x64.zip` |
+
+Сборки под musl нужны для Alpine и других образов на musl libc: glibc-бинарь там не запускается вовсе — ему нужен загрузчик `/lib64/ld-linux-*.so.2`, которого в системе нет. Обойти это можно пакетом `gcompat`, но с musl-архивом прослойка не требуется. На обычных дистрибутивах (Debian, Ubuntu, RHEL, Arch) берите glibc-вариант.
 
 Также прилагается файл `SHA256SUMS` — для проверки целостности.
 
@@ -126,7 +130,18 @@ dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
 ./dist/yt --help
 ```
 
-Поддерживаемые RID: `osx-arm64`, `linux-x64`, `linux-arm64`, `win-x64`. Требуется .NET 10 SDK 10.0.201+.
+Поддерживаемые RID: `osx-arm64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`, `win-x64`. Требуется .NET 10 SDK 10.0.201+.
+
+NativeAOT линкует нативным тулчейном той системы, где идёт сборка, поэтому musl-RID собираются внутри Alpine, а не кросс-компиляцией с glibc-хоста:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:10.0-alpine sh -euc '
+  apk add --no-cache clang build-base zlib-dev git
+  git config --global --add safe.directory /src
+  dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
+    -c Release -r linux-musl-x64 --self-contained -o publish/linux-musl-x64
+'
+```
 
 ## Быстрый старт
 

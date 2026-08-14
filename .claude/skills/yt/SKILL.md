@@ -33,10 +33,10 @@ scoop install yt
 irm https://raw.githubusercontent.com/RoboNET/YandexTrackerCLI/main/install.ps1 | iex
 ```
 
-Без пакетных менеджеров — готовый бинарь из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest) (архивы: `yt-linux-x64.tar.gz`, `yt-linux-arm64.tar.gz`, `yt-osx-arm64.tar.gz`, `yt-win-x64.zip`):
+Без пакетных менеджеров — готовый бинарь из [GitHub Releases](https://github.com/RoboNET/YandexTrackerCLI/releases/latest) (архивы: `yt-linux-x64.tar.gz`, `yt-linux-arm64.tar.gz`, `yt-linux-musl-x64.tar.gz`, `yt-linux-musl-arm64.tar.gz`, `yt-osx-arm64.tar.gz`, `yt-win-x64.zip`):
 
 ```bash
-RID=linux-x64   # подставь платформу
+RID=linux-x64   # подставь платформу; на Alpine и других musl-образах — linux-musl-x64 / linux-musl-arm64
 curl -fsSL -o yt.tar.gz "https://github.com/RoboNET/YandexTrackerCLI/releases/latest/download/yt-${RID}.tar.gz"
 tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
 # macOS: если бинарь в карантине — xattr -d com.apple.quarantine /usr/local/bin/yt

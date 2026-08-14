@@ -77,25 +77,57 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,     rid: linux-x64,   archive: tar.gz }
-          - { os: ubuntu-24.04-arm,  rid: linux-arm64, archive: tar.gz }
-          - { os: macos-latest,      rid: osx-arm64,   archive: tar.gz }
-          - { os: windows-latest,    rid: win-x64,     archive: zip    }
+          - { os: ubuntu-latest,     rid: linux-x64,        archive: tar.gz }
+          - { os: ubuntu-24.04-arm,  rid: linux-arm64,      archive: tar.gz }
+          - { os: ubuntu-latest,     rid: linux-musl-x64,   archive: tar.gz, musl: true }
+          - { os: ubuntu-24.04-arm,  rid: linux-musl-arm64, archive: tar.gz, musl: true }
+          - { os: macos-latest,      rid: osx-arm64,        archive: tar.gz }
+          - { os: windows-latest,    rid: win-x64,          archive: zip    }
     runs-on: ${{ matrix.os }}
+    env:
+      # Образ для musl-сборок. Тег плавающий по патчам намеренно: global.json требует SDK
+      # не ниже 10.0.201 при rollForward=latestFeature, и плавающий тег гарантирует это без
+      # ручного обновления. Воспроизводимость сборки здесь не пострадает: версия бинаря
+      # берётся из git-тега (MinVer), а не из окружения.
+      MUSL_SDK_IMAGE: mcr.microsoft.com/dotnet/sdk:10.0-alpine
+      # Голый Alpine для проверки запуска: важно, что бинарь стартует БЕЗ SDK и без gcompat.
+      MUSL_RUNTIME_IMAGE: alpine:3.22
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Setup .NET
+        if: ${{ !matrix.musl }}
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
       - name: Publish (NativeAOT)
+        if: ${{ !matrix.musl }}
         run: dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj -c Release -r ${{ matrix.rid }} --self-contained -o publish/${{ matrix.rid }}
 
+      # NativeAOT линкует нативным тулчейном целевой платформы, поэтому musl-бинарь собирается
+      # внутри Alpine-контейнера (нативно для musl), а не кросс-компиляцией с glibc-раннера.
+      # Контейнер поднимается через docker run, а не через `container:` на job: официальные
+      # actions выполняются node'ой, которую раннер монтирует внутрь контейнера, и в Alpine
+      # это отдельная морока — здесь она не нужна, checkout и упаковка идут на хосте.
+      - name: Publish (NativeAOT, musl in Alpine)
+        if: ${{ matrix.musl }}
+        run: |
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -e RID="${{ matrix.rid }}" \
+            "$MUSL_SDK_IMAGE" \
+            sh -euc '
+              apk add --no-cache clang build-base zlib-dev git
+              git config --global --add safe.directory /src
+              dotnet publish src/YandexTrackerCLI/YandexTrackerCLI.csproj \
+                -c Release -r "$RID" --self-contained -o "publish/$RID"
+            '
+
       - name: Read version
+        if: ${{ !matrix.musl }}
         id: version
         shell: bash
         run: |
@@ -104,6 +136,18 @@ jobs:
           else
             VERSION=$(./publish/${{ matrix.rid }}/yt --version)
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      # Запуск в голом Alpine, без SDK и без gcompat — ровно тот сценарий, ради которого
+      # musl-артефакты и появились (issue #27). На glibc-раннере этот бинарь не стартует,
+      # поэтому проверять его шагом выше нельзя.
+      - name: Read version (musl in Alpine)
+        if: ${{ matrix.musl }}
+        id: version-musl
+        run: |
+          VERSION=$(docker run --rm -v "$PWD":/src -w /src "$MUSL_RUNTIME_IMAGE" \
+            ./publish/${{ matrix.rid }}/yt --version)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
