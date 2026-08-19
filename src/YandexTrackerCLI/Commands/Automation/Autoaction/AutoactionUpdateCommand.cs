@@ -15,6 +15,10 @@ using Output;
 /// версию (или <c>If-Match</c>) для PATCH.
 /// Поле <c>version</c> из тела (его отдаёт GET, но PATCH его не принимает)
 /// вырезается и, если флаг не задан, используется как значение query-параметра.
+/// <para>
+/// Приоритет источников версии: <c>--version</c> → <c>--overwrite-latest</c> → поле
+/// <c>version</c> в теле → версия, запомненная предыдущим <c>get</c> → без версии.
+/// </para>
 /// </summary>
 public static class AutoactionUpdateCommand
 {
@@ -31,7 +35,9 @@ public static class AutoactionUpdateCommand
         var inactiveOpt = new Option<bool>("--inactive") { Description = "Override active=false." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
-        var versionOpt = AutomationVersionOption.Create("автодействия");
+        var versionOpt = ResourceVersionOption.Create("автодействия");
+        var noVersionCheckOpt = ResourceVersionOption.CreateNoVersionCheck();
+        var overwriteLatestOpt = ResourceVersionOption.CreateOverwriteLatest("автодействие");
 
         var cmd = new Command("update", "Обновить автодействие (PATCH /v3/queues/{q}/autoactions/{id}).");
         cmd.Arguments.Add(idArg);
@@ -42,17 +48,22 @@ public static class AutoactionUpdateCommand
         cmd.Options.Add(jsonFileOpt);
         cmd.Options.Add(jsonStdinOpt);
         cmd.Options.Add(versionOpt);
+        cmd.Options.Add(noVersionCheckOpt);
+        cmd.Options.Add(overwriteLatestOpt);
 
         cmd.SetAction(async (pr, ct) =>
         {
+            var decision = new ResourceVersionDecision(null, ResourceVersionSource.None, null);
+            var id = pr.GetValue(idArg)!;
+            var queue = pr.GetValue(queueOpt)!;
             try
             {
-                var id = pr.GetValue(idArg)!;
-                var queue = pr.GetValue(queueOpt)!;
                 var name = pr.GetValue(nameOpt);
                 var active = pr.GetValue(activeOpt);
                 var inactive = pr.GetValue(inactiveOpt);
-                var version = pr.GetValue(versionOpt);
+                var explicitVersion = pr.GetValue(versionOpt);
+                var overwriteLatest = pr.GetValue(overwriteLatestOpt);
+                ResourceVersionFlow.EnsureFlagsCompatible(explicitVersion, overwriteLatest);
 
                 if (active && inactive)
                 {
@@ -80,7 +91,7 @@ public static class AutoactionUpdateCommand
                         "Specify --json-file, --json-stdin, or inline flags.");
                 // Поле version приходит из GET, но в теле PATCH запрещено:
                 // вырезаем его и, если явного флага нет, используем как версию запроса.
-                body = AutomationVersionExtractor.StripVersion(body, out var bodyVersion);
+                body = ResourceVersionExtractor.StripVersion(body, out var bodyVersion);
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -91,19 +102,29 @@ public static class AutoactionUpdateCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
-                var path = AutomationVersionOption.AppendVersionQuery(
-                    $"queues/{Uri.EscapeDataString(queue)}/autoactions/{Uri.EscapeDataString(id)}",
-                    version ?? bodyVersion);
+                var path = $"queues/{Uri.EscapeDataString(queue)}/autoactions/{Uri.EscapeDataString(id)}";
+                decision = await ResourceVersionFlow.Resolve(
+                    ctx, ResourceVersionFlow.AutoactionResource, $"{queue}/{id}", path,
+                    explicitVersion, bodyVersion,
+                    pr.GetValue(noVersionCheckOpt), overwriteLatest, ct);
 
-                var result = await ctx.Client.PatchJsonAsync(path, body, ct);
+                var result = await ctx.Client.PatchJsonAsync(
+                    ResourceVersionOption.AppendVersionQuery(path, decision.Version), body, ct);
+
+                // Новая версия из ответа — иначе второй update подряд упёрся бы в конфликт.
+                await ResourceVersionFlow.Remember(
+                    ctx, ResourceVersionFlow.AutoactionResource, $"{queue}/{id}", result, ct);
+
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat,
                     pretty: !Console.IsOutputRedirected);
                 return 0;
             }
             catch (TrackerException ex)
             {
-                ErrorWriter.Write(Console.Error, ex);
-                return ex.Code.ToExitCode();
+                var explained = ResourceVersionFlow.Explain(
+                    ex, decision, $"yt automation autoaction get {id} --queue {queue}");
+                ErrorWriter.Write(Console.Error, explained);
+                return explained.Code.ToExitCode();
             }
         });
 

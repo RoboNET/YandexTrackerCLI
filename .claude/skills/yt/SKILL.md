@@ -47,8 +47,9 @@ tar -xzf yt.tar.gz && sudo mv yt /usr/local/bin/yt
 ## Базовые правила
 
 - **JSON-вывод по умолчанию для скриптов** — auto-detect: при pipe всегда compact JSON. Не пытайся парсить таблицы — всегда работай с `yt ... | jq` или `python -c`.
-- **Exit-коды** — стабильные (см. ниже): 0 = успех, 2 = плохие аргументы, 3 = read-only заблокирован, 4 = auth_failed/forbidden, 5 = not_found, 6 = rate_limited, 7 = server_error, 8 = network_error, 9 = config_error, 10 = policy_violation (очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues` либо внешний эффект при `external_effects: false`), 11 = cancelled (Ctrl-C или сработавший таймаут), 130/143 = процесс убит SIGINT/SIGTERM самой ОС. Отмену проверяй как «11, 130 или 143».
+- **Exit-коды** — стабильные (см. ниже): 0 = успех, 2 = плохие аргументы, 3 = read-only заблокирован, 4 = auth_failed/forbidden, 5 = not_found, 6 = rate_limited, 7 = server_error, 8 = network_error, 9 = config_error, 10 = policy_violation (очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues` либо внешний эффект при `external_effects: false`), 11 = cancelled (Ctrl-C или сработавший таймаут), 12 = version_conflict (ресурс изменили после того, как вы его прочитали), 130/143 = процесс убит SIGINT/SIGTERM самой ОС. Отмену проверяй как «11, 130 или 143».
 - **Exit 11 = результата нет.** Команда не доработала до конца: пришёл Ctrl-C/SIGTERM либо истёк HTTP-таймаут. Всё, что успело напечататься в stdout, — обрывок, а не ответ; повторяй команду, а не разбирай её вывод. Сообщение в stderr называет причину, а при таймауте — ещё и текущее значение и способ его поднять (`--timeout <секунды>`, env `YT_TIMEOUT`). Для мутирующих команд exit 11 означает «неизвестно, применилось ли» — перед повтором проверь состояние задачи. Значение таймаута — целое от 1 до 86400; `--timeout 0` или `YT_TIMEOUT=-5` отвергаются как `invalid_args` (exit 2), а не игнорируются молча.
+- **Exit 12 = чужая правка, а не сбой.** `yt` запоминает версию ресурса в момент, когда вы прочитали его командой `get`, и отправляет её на последующем `update` (optimistic locking). Если между чтением и записью ресурс изменил кто-то другой, API отвечает конфликтом, а CLI — exit 12 и сообщением с возрастом запомненной версии и командой перечитывания. Правильная реакция — перечитать ресурс, переприменить правку и повторить; затирать чужое изменение вслепую можно только осознанно, через `--overwrite-latest`. Подробности — в разделе «Версии ресурсов».
 - **Профиль** — выбирается через `--profile <name>` или `YT_PROFILE`. Если в конфиге ровно один профиль — он используется автоматически. Если несколько — нужно либо указать, либо предварительно `yt config profile <name>`.
 - **Перед мутирующими действиями** — спроси пользователя подтверждение (создание issue, удаление, изменение статуса, добавление комментария от его имени).
 - **Страховка `--read-only`** — необязательный пояс безопасности для AI-агентов или массовых операций. Блокирует POST/PUT/PATCH/DELETE до выхода в сеть, возвращает exit 3. Пропускает POST на `_search`-эндпоинты (поиск через `issue find`). Для обычных read-команд (`issue get`, `comment list`, `attachment list`, …) флаг не нужен — они и так GET-запросы.
@@ -216,6 +217,9 @@ yt issue create --queue TECH --summary "Bug in login" \
   --description "Шаги воспроизведения..." --priority high
 
 yt issue update TECH-1 --summary "Updated" --priority normal
+yt issue update TECH-1 --summary "Updated" --version 7      # явная версия
+yt issue update TECH-1 --summary "Updated" --no-version-check   # без проверки версии
+yt issue update TECH-1 --summary "Updated" --overwrite-latest   # затереть чужую правку
 yt issue transition TECH-1 --list                 # доступные переходы
 yt issue transition TECH-1 --to in_progress       # выполнить
 
@@ -241,6 +245,59 @@ yt board list               # доски
 yt field list --queue TECH  # поля очереди
 ```
 
+### Версии ресурсов (optimistic locking)
+
+API Трекера принимает версию ресурса query-параметром `?version=<n>` на PATCH: если на
+сервере версия уже другая, запрос отклоняется вместо того, чтобы затереть чужую правку.
+
+**Версия запоминается на чтении.** Команды `issue get`, `automation trigger get`,
+`automation autoaction get` кладут версию прочитанного ресурса
+в локальный кэш (`$XDG_CACHE_HOME/yandex-tracker/resource-versions.json`, по умолчанию
+`~/.cache/…`, права `0600`). Ключ включает организацию (тип и id — действующие на момент
+вызова, то есть с учётом `YT_ORG_TYPE`/`YT_ORG_ID`) и имя профиля, поэтому разные
+организации не пересекаются даже под одним и тем же именем профиля. Регистр ключа задачи
+и ключа очереди значения не имеет: `issue get tech-1` и `issue update TECH-1` — одна и та
+же запись. Списки и поиск (`issue find`, `trigger list`, …) в кэш **не** пишут —
+запоминается только то, что вы действительно открывали. Ответ успешного `update` тоже
+запоминается, так что два `update` подряд работают без промежуточного `get`.
+
+Мутирующие команды (`issue update`, `automation trigger update`,
+`automation autoaction update`, `activate`, `deactivate`) выбирают версию по приоритету:
+
+1. явный `--version <n>`;
+2. `--overwrite-latest` — CLI сам делает `GET` и берёт текущую версию сервера;
+3. корневое поле `version` в теле `--json-file`/`--json-stdin` (из тела оно вырезается —
+   API его там не принимает);
+4. версия, запомненная предыдущим `get`;
+5. без версии.
+
+**Промах кэша — это пункт 5, а не ошибка.** Скрипт, который зовёт `update` без
+предшествующего `get`, работает ровно как раньше. Исключение — автоматизации: там версию
+требует сам API, и без неё `update`/`activate`/`deactivate` возвращают `428`.
+
+Флаги:
+
+| Флаг | Что делает |
+|---|---|
+| `--version <n>` | Явная версия. Есть у `issue update` и у всех PATCH-команд автоматизаций |
+| `--no-version-check` | Не подставлять версию из кэша — отправить PATCH без проверки. Явный `--version` и поле `version` в теле при этом продолжают действовать: их задали вы |
+| `--overwrite-latest` | Перечитать ресурс и записать поверх текущей версии, **осознанно затирая** правки, сделанные после вашего `get`. Если перечитать версию не удалось — GET отказал либо в его ответе нет корневого `version` — мутация **не отправляется** (во втором случае `unexpected`, exit 1): запись без версии была бы записью вслепую, ровно тем, чего флаг просил избежать |
+
+`--version` вместе с `--overwrite-latest` — `invalid_args` (exit 2): флаги требуют записи
+поверх разных версий, выбрать за вас нельзя.
+
+При конфликте (exit 12) сообщение называет возраст запомненной записи и команду
+перечитывания, например: `Версия 7 прочитана 3 дня назад, ресурс с тех пор изменили —
+перечитайте: yt issue get TECH-1`.
+
+Кэш вспомогательный: битый или недоступный файл не роняет команду — она ведёт себя как
+при промахе. Записи старше 30 дней выбрасываются при следующей записи в кэш; это уборка
+мусора, а не срок годности — пока запись жива, она используется независимо от возраста.
+
+**Компоненты (`component get`/`component update`) в этом не участвуют** — там версия не
+запоминается и флагов версии нет. Поддержка `?version=` у компонентов не подтверждена
+живым API, а документация Трекера в этом вопросе уже была неточной.
+
 ### Автоматизации
 
 `yt automation <kind> <op>` — работа с триггерами, автодействиями и макросами очереди (per-queue CRUD + activate/deactivate, кроме макросов).
@@ -249,13 +306,13 @@ yt field list --queue TECH  # поля очереди
 yt automation trigger    list   --queue TECH
 yt automation trigger    get    <id> --queue TECH
 yt automation trigger    create --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
-yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive] [--version <n>]
+yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive] [--version <n>] [--no-version-check] [--overwrite-latest]
 yt automation trigger    delete <id> --queue TECH
-yt automation trigger    activate   <id> --queue TECH [--version <n>]
-yt automation trigger    deactivate <id> --queue TECH [--version <n>]
+yt automation trigger    activate   <id> --queue TECH [--version <n>] [--overwrite-latest]
+yt automation trigger    deactivate <id> --queue TECH [--version <n>] [--overwrite-latest]
 
 yt automation autoaction <list|get|create|update|delete|activate|deactivate>   # те же опции
-                                                                              # (update/activate/deactivate — тоже [--version <n>])
+                                                                              # (update/activate/deactivate — тоже флаги версии)
 yt automation macro      <list|get|create|update|delete>                       # без activate/deactivate
 ```
 
@@ -263,7 +320,7 @@ Inline-флаги (`--name`, `--active`, `--inactive`) **сливаются** п
 
 `--version <n>` — версия триггера/автодействия (optimistic locking). API требует её (или заголовок `If-Match`) на любом PATCH: без версии `update`/`activate`/`deactivate` возвращают `428 version: Необходимо указать либо параметр 'version', либо значение заголовка If-Match`. Принимается она только query-параметром `?version=<n>` — поле `version` в JSON-теле даёт `400 version: Incorrect data format`.
 
-Поэтому на `update` CLI сам вырезает корневое поле `version` из тела и, если явный `--version` не передан, подставляет его значение в query. Флаг, если он задан, побеждает значение из тела; поле из отправляемого JSON убирается в любом случае. Для `activate`/`deactivate` тело фиксированное (`{"active":…}`), там версия задаётся только флагом.
+Поэтому на `update` CLI сам вырезает корневое поле `version` из тела и, если явный `--version` не передан, подставляет его значение в query. Флаг, если он задан, побеждает значение из тела; поле из отправляемого JSON убирается в любом случае. Если ни флага, ни поля нет, подставляется версия, запомненная предыдущим `get` (см. «Версии ресурсов»), — тогда `activate`/`deactivate` после `get` работают без явного флага. Для `activate`/`deactivate` тело фиксированное (`{"active":…}`), версия туда попасть не может.
 
 **Тело для `create`/`update` пишется вручную — вывод `get` в него не пайпится.** У ресурса два несовместимых JSON-формата: тот, что отдаёт `GET`, и тот, что принимает запись. CLI их не конвертирует (кроме `version`, см. выше) — тело идёт в API как есть.
 
@@ -544,6 +601,7 @@ fi
 | 9 | config_error | проверить профиль (`yt config list`) или `auth login` |
 | 10 | policy_violation | очередь вне `allowed_queues` профиля, запись вне `allowed_write_issues`, `summonees`/`maillistSummonees` при действующем ограничении области записи или при `external_effects: false`, мутация `triggers`/`autoactions`/`macros` при `external_effects: false`, либо попытка ослабить политику через `yt config set` — сменить профиль (`--profile`) или, если есть креденшелы, пересоздать его через `yt auth login` |
 | 11 | cancelled | команда прервана: Ctrl-C/SIGINT, SIGTERM или истёкший HTTP-таймаут. Вывод неполон — повторить команду; при таймауте поднять его через `--timeout <секунды>` или `YT_TIMEOUT` |
+| 12 | version_conflict | ресурс изменили после того, как вы его прочитали (HTTP 409/412). Перечитать (`yt issue get …`), переприменить правку и повторить; затереть чужое изменение осознанно — `--overwrite-latest` |
 | 130 | — | процесс убит SIGINT самой ОС (сигнал пришёл до первой async-операции либо это второй Ctrl-C); JSON-ошибки нет. Тот же код у `yt suggest` при выходе по `Esc` — штатный отказ от выбора |
 | 143 | — | процесс убит SIGTERM самой ОС; JSON-ошибки нет |
 

@@ -11,6 +11,12 @@ using Output;
 /// <see cref="JsonBodyReader.ReadAndMerge"/>: scalar inline-флаги
 /// (<c>--summary</c>, <c>--description</c>, <c>--type</c>, <c>--priority</c>,
 /// <c>--assignee</c>) мерджатся поверх raw-payload.
+/// <para>
+/// Версия для optimistic locking выбирается по приоритету: <c>--version</c> →
+/// <c>--overwrite-latest</c> → корневое поле <c>version</c> в теле → версия, запомненная
+/// предыдущим <c>yt issue get</c> → без версии. Последнее — прежнее поведение: скрипт,
+/// зовущий <c>update</c> без <c>get</c>, работает как работал.
+/// </para>
 /// </summary>
 public static class IssueUpdateCommand
 {
@@ -29,6 +35,9 @@ public static class IssueUpdateCommand
         var assigneeOpt = new Option<string?>("--assignee") { Description = "Новый исполнитель (override поля assignee)." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу с телом запроса." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
+        var versionOpt = ResourceVersionOption.Create("задачи");
+        var noVersionCheckOpt = ResourceVersionOption.CreateNoVersionCheck();
+        var overwriteLatestOpt = ResourceVersionOption.CreateOverwriteLatest("задачу");
 
         var cmd = new Command("update", "Обновить задачу (PATCH /v3/issues/{key}).");
         cmd.Arguments.Add(keyArg);
@@ -39,12 +48,16 @@ public static class IssueUpdateCommand
         cmd.Options.Add(assigneeOpt);
         cmd.Options.Add(jsonFileOpt);
         cmd.Options.Add(jsonStdinOpt);
+        cmd.Options.Add(versionOpt);
+        cmd.Options.Add(noVersionCheckOpt);
+        cmd.Options.Add(overwriteLatestOpt);
 
         cmd.SetAction(async (pr, ct) =>
         {
+            var decision = new ResourceVersionDecision(null, ResourceVersionSource.None, null);
+            var key = pr.GetValue(keyArg)!;
             try
             {
-                var key = pr.GetValue(keyArg)!;
                 var summary = pr.GetValue(summaryOpt);
                 var description = pr.GetValue(descriptionOpt);
                 var type = pr.GetValue(typeOpt);
@@ -52,6 +65,9 @@ public static class IssueUpdateCommand
                 var assignee = pr.GetValue(assigneeOpt);
                 var jsonFile = pr.GetValue(jsonFileOpt);
                 var jsonStdin = pr.GetValue(jsonStdinOpt);
+                var explicitVersion = pr.GetValue(versionOpt);
+                var overwriteLatest = pr.GetValue(overwriteLatestOpt);
+                ResourceVersionFlow.EnsureFlagsCompatible(explicitVersion, overwriteLatest);
 
                 var overrides = new List<(string, JsonBodyMerger.OverrideValue)>();
                 if (!string.IsNullOrWhiteSpace(summary))
@@ -78,6 +94,9 @@ public static class IssueUpdateCommand
                 var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Nothing to update: specify at least one typed option or use --json-file/--json-stdin.");
+                // Поле version приходит из GET, но в теле PATCH запрещено: вырезаем его и,
+                // если явного флага нет, используем как версию запроса.
+                body = ResourceVersionExtractor.StripVersion(body, out var bodyVersion);
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -88,14 +107,27 @@ public static class IssueUpdateCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
-                var result = await ctx.Client.PatchJsonAsync($"issues/{Uri.EscapeDataString(key)}", body, ct);
+                var path = $"issues/{Uri.EscapeDataString(key)}";
+                decision = await ResourceVersionFlow.Resolve(
+                    ctx, ResourceVersionFlow.IssueResource, key, path,
+                    explicitVersion, bodyVersion,
+                    pr.GetValue(noVersionCheckOpt), overwriteLatest, ct);
+
+                var result = await ctx.Client.PatchJsonAsync(
+                    ResourceVersionOption.AppendVersionQuery(path, decision.Version), body, ct);
+
+                // Новая версия из ответа — иначе второй update подряд упёрся бы в конфликт.
+                await ResourceVersionFlow.Remember(
+                    ctx, ResourceVersionFlow.IssueResource, key, result, ct);
+
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat, pretty: !Console.IsOutputRedirected);
                 return 0;
             }
             catch (TrackerException ex)
             {
-                ErrorWriter.Write(Console.Error, ex);
-                return ex.Code.ToExitCode();
+                var explained = ResourceVersionFlow.Explain(ex, decision, $"yt issue get {key}");
+                ErrorWriter.Write(Console.Error, explained);
+                return explained.Code.ToExitCode();
             }
         });
 

@@ -42,6 +42,10 @@ public static class TriggerGetCommand
                 var result = await ctx.Client.GetAsync(
                     $"queues/{Uri.EscapeDataString(queue)}/triggers/{Uri.EscapeDataString(id)}", ct);
 
+                // Момент чтения — точка отсчёта для optimistic locking на последующем update.
+                await ResourceVersionFlow.Remember(
+                    ctx, ResourceVersionFlow.TriggerResource, $"{queue}/{id}", result, ct);
+
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat,
                     pretty: !Console.IsOutputRedirected);
                 return 0;

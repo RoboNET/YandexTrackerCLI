@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Api;
 using Auth;
 using Config;
+using Storage;
 
 [JsonSerializable(typeof(JwtHeader))]
 [JsonSerializable(typeof(JwtPayload))]
@@ -12,6 +13,8 @@ using Config;
 [JsonSerializable(typeof(AuthConfig))]
 [JsonSerializable(typeof(TokenCacheEntry))]
 [JsonSerializable(typeof(Dictionary<string, TokenCacheEntry>))]
+[JsonSerializable(typeof(ResourceVersionEntry))]
+[JsonSerializable(typeof(Dictionary<string, ResourceVersionEntry>))]
 [JsonSerializable(typeof(IamExchangeRequest))]
 [JsonSerializable(typeof(IamExchangeResponse))]
 [JsonSerializable(typeof(IssueSearchRequest))]
