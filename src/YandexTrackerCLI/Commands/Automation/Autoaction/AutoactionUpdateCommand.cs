@@ -11,8 +11,6 @@ using Output;
 /// источника (<c>--json-file</c> / <c>--json-stdin</c>) и inline-флагов
 /// (<c>--name</c>, <c>--active</c>, <c>--inactive</c>) через
 /// <see cref="JsonBodyReader.ReadAndMerge"/>.
-/// Действия <c>Update</c> в read-формате приводятся к write-формату через
-/// <see cref="AutomationActionBodyNormalizer.Normalize"/>.
 /// Опциональный <c>--version</c> добавляется query-параметром: API требует
 /// версию (или <c>If-Match</c>) для PATCH.
 /// Поле <c>version</c> из тела (его отдаёт GET, но PATCH его не принимает)
@@ -80,7 +78,6 @@ public static class AutoactionUpdateCommand
                     pr.GetValue(jsonFileOpt), pr.GetValue(jsonStdinOpt), Console.In, overrides)
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --json-file, --json-stdin, or inline flags.");
-                body = AutomationActionBodyNormalizer.Normalize(body);
                 // Поле version приходит из GET, но в теле PATCH запрещено:
                 // вырезаем его и, если явного флага нет, используем как версию запроса.
                 body = AutomationVersionExtractor.StripVersion(body, out var bodyVersion);

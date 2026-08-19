@@ -31,8 +31,8 @@ public static class AutomationVersionExtractor
     /// либо исходная строка без изменений, если вырезать нечего.
     /// </returns>
     /// <remarks>
-    /// Как и <see cref="AutomationActionBodyNormalizer.Normalize"/>, метод не бросает
-    /// исключений на неожиданном JSON: валидация тела — забота <see cref="JsonBodyReader"/>.
+    /// Метод не бросает исключений на неожиданном JSON: валидация тела —
+    /// забота <see cref="JsonBodyReader"/>.
     /// Нечисловое <c>version</c> (например строка) остаётся в теле как есть — угадывать
     /// намерение пользователя нельзя, пусть отвечает API.
     /// </remarks>

@@ -51,41 +51,6 @@ public sealed class TriggerUpdateCommandTests
     }
 
     /// <summary>
-    /// Действие <c>Update</c> в read-формате конвертируется в write-формат
-    /// перед отправкой PATCH.
-    /// </summary>
-    [Test]
-    public async Task Update_ReadFormatUpdateAction_PatchesWriteFormatBody()
-    {
-        using var env = new TestEnv();
-        env.SetConfig(TestEnv.MinimalOAuthConfig);
-
-        var file = Path.Combine(env.Root, "trg-read-format.json");
-        await File.WriteAllTextAsync(file,
-            """{"actions":[{"type":"Update","id":3,"update":[{"field":{"id":"frontier","display":"Рубеж"},"update":{"set":90}}]}]}""");
-
-        string? capturedBody = null;
-        var inner = new TestHttpMessageHandler().Push(req =>
-        {
-            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
-            var r = new HttpResponseMessage(HttpStatusCode.OK);
-            r.Content = new StringContent("""{"id":17}""", Encoding.UTF8, "application/json");
-            return r;
-        });
-        env.InnerHandler = inner;
-
-        var exit = await env.Invoke(
-            new[] { "automation", "trigger", "update", "17", "--queue", "DEV", "--json-file", file },
-            new StringWriter(), new StringWriter());
-
-        await Assert.That(exit).IsEqualTo(0);
-        using var doc = JsonDocument.Parse(capturedBody!);
-        var update = doc.RootElement.GetProperty("actions")[0].GetProperty("update");
-        await Assert.That(update.ValueKind).IsEqualTo(JsonValueKind.Object);
-        await Assert.That(update.GetProperty("frontier").GetInt32()).IsEqualTo(90);
-    }
-
-    /// <summary>
     /// <c>--version</c> уходит query-параметром <c>?version=N</c> в PATCH-URL,
     /// без флага query остаётся пустым.
     /// </summary>

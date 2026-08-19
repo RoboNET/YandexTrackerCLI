@@ -11,8 +11,6 @@ using Output;
 /// (<c>--json-file</c> / <c>--json-stdin</c>) и inline-флагов
 /// (<c>--name</c>, <c>--active</c>, <c>--inactive</c>) через
 /// <see cref="JsonBodyReader.ReadAndMerge"/>.
-/// Действия <c>Update</c> в read-формате приводятся к write-формату через
-/// <see cref="AutomationActionBodyNormalizer.Normalize"/>.
 /// </summary>
 public static class TriggerCreateCommand
 {
@@ -71,7 +69,6 @@ public static class TriggerCreateCommand
                 var body = JsonBodyReader.ReadAndMerge(jsonFile, jsonStdin, Console.In, overrides)
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --json-file, --json-stdin, or inline flags.");
-                body = AutomationActionBodyNormalizer.Normalize(body);
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
