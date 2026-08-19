@@ -250,4 +250,205 @@ public sealed class AutoactionCommandsTests
         using var doc = JsonDocument.Parse(body!);
         await Assert.That(doc.RootElement.GetProperty("active").GetBoolean()).IsFalse();
     }
+
+    /// <summary>
+    /// <c>--version</c> уходит query-параметром <c>?version=N</c> в PATCH-URL.
+    /// </summary>
+    [Test]
+    public async Task Update_WithVersion_AddsVersionQueryParameter()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        string? query = null;
+        string? path = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            path = req.RequestUri!.AbsolutePath;
+            query = req.RequestUri.Query;
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":17}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var exit = await env.Invoke(
+            new[] { "automation", "autoaction", "update", "17",
+                    "--queue", "DEV", "--name", "renamed", "--version", "5" },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(path!.EndsWith("/queues/DEV/autoactions/17", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(query).IsEqualTo("?version=5");
+    }
+
+    /// <summary>
+    /// Без <c>--version</c> URL остаётся прежним — старое поведение не меняется.
+    /// </summary>
+    [Test]
+    public async Task Update_WithoutVersion_HasNoVersionQueryParameter()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        string? query = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            query = req.RequestUri!.Query;
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":17}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var exit = await env.Invoke(
+            new[] { "automation", "autoaction", "update", "17", "--queue", "DEV", "--name", "renamed" },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(query!.Contains("version", StringComparison.Ordinal)).IsFalse();
+    }
+
+    /// <summary>
+    /// <c>activate --version N</c> добавляет <c>?version=N</c> в PATCH-URL.
+    /// </summary>
+    [Test]
+    public async Task Activate_WithVersion_AddsVersionQueryParameter()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        string? query = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            query = req.RequestUri!.Query;
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":17,"active":true}""",
+                Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var exit = await env.Invoke(
+            new[] { "automation", "autoaction", "activate", "17", "--queue", "DEV", "--version", "7" },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(query).IsEqualTo("?version=7");
+    }
+
+    /// <summary>
+    /// <c>deactivate --version N</c> добавляет <c>?version=N</c> в PATCH-URL,
+    /// а без флага query остаётся пустым.
+    /// </summary>
+    [Test]
+    public async Task Deactivate_VersionFlagControlsQuery()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var queries = new List<string>();
+        var inner = new TestHttpMessageHandler()
+            .Push(req =>
+            {
+                queries.Add(req.RequestUri!.Query);
+                var r = new HttpResponseMessage(HttpStatusCode.OK);
+                r.Content = new StringContent("""{"id":17,"active":false}""",
+                    Encoding.UTF8, "application/json");
+                return r;
+            })
+            .Push(req =>
+            {
+                queries.Add(req.RequestUri!.Query);
+                var r = new HttpResponseMessage(HttpStatusCode.OK);
+                r.Content = new StringContent("""{"id":17,"active":false}""",
+                    Encoding.UTF8, "application/json");
+                return r;
+            });
+        env.InnerHandler = inner;
+
+        var withVersion = await env.Invoke(
+            new[] { "automation", "autoaction", "deactivate", "17", "--queue", "DEV", "--version", "9" },
+            new StringWriter(), new StringWriter());
+        var withoutVersion = await env.Invoke(
+            new[] { "automation", "autoaction", "deactivate", "17", "--queue", "DEV" },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(withVersion).IsEqualTo(0);
+        await Assert.That(withoutVersion).IsEqualTo(0);
+        await Assert.That(queries[0]).IsEqualTo("?version=9");
+        await Assert.That(queries[1].Contains("version", StringComparison.Ordinal)).IsFalse();
+    }
+
+    /// <summary>
+    /// Поле <c>version</c> из тела (как его отдаёт GET) уходит в query-параметр,
+    /// а из отправляемого JSON вырезается: API его в теле не принимает.
+    /// </summary>
+    [Test]
+    public async Task Update_VersionInBody_MovesToQueryAndIsStripped()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var file = Path.Combine(env.Root, "aa-with-version.json");
+        await File.WriteAllTextAsync(file, """{"id":17,"version":42,"name":"a"}""");
+
+        string? query = null;
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            query = req.RequestUri!.Query;
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":17}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var exit = await env.Invoke(
+            new[] { "automation", "autoaction", "update", "17", "--queue", "DEV", "--json-file", file },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(query).IsEqualTo("?version=42");
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.TryGetProperty("version", out _)).IsFalse();
+        await Assert.That(doc.RootElement.GetProperty("name").GetString()).IsEqualTo("a");
+    }
+
+    /// <summary>
+    /// Явный <c>--version</c> побеждает значение из тела, но само поле из тела
+    /// всё равно вырезается.
+    /// </summary>
+    [Test]
+    public async Task Update_ExplicitVersion_WinsOverBodyVersion()
+    {
+        using var env = new TestEnv();
+        env.SetConfig(TestEnv.MinimalOAuthConfig);
+
+        var file = Path.Combine(env.Root, "aa-with-version-2.json");
+        await File.WriteAllTextAsync(file, """{"version":42,"name":"a"}""");
+
+        string? query = null;
+        string? capturedBody = null;
+        var inner = new TestHttpMessageHandler().Push(req =>
+        {
+            query = req.RequestUri!.Query;
+            capturedBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            var r = new HttpResponseMessage(HttpStatusCode.OK);
+            r.Content = new StringContent("""{"id":17}""", Encoding.UTF8, "application/json");
+            return r;
+        });
+        env.InnerHandler = inner;
+
+        var exit = await env.Invoke(
+            new[] { "automation", "autoaction", "update", "17", "--queue", "DEV",
+                    "--json-file", file, "--version", "99" },
+            new StringWriter(), new StringWriter());
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(query).IsEqualTo("?version=99");
+        using var doc = JsonDocument.Parse(capturedBody!);
+        await Assert.That(doc.RootElement.TryGetProperty("version", out _)).IsFalse();
+    }
 }

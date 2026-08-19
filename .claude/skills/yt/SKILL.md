@@ -249,16 +249,44 @@ yt field list --queue TECH  # поля очереди
 yt automation trigger    list   --queue TECH
 yt automation trigger    get    <id> --queue TECH
 yt automation trigger    create --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
-yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
+yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive] [--version <n>]
 yt automation trigger    delete <id> --queue TECH
-yt automation trigger    activate   <id> --queue TECH
-yt automation trigger    deactivate <id> --queue TECH
+yt automation trigger    activate   <id> --queue TECH [--version <n>]
+yt automation trigger    deactivate <id> --queue TECH [--version <n>]
 
 yt automation autoaction <list|get|create|update|delete|activate|deactivate>   # те же опции
+                                                                              # (update/activate/deactivate — тоже [--version <n>])
 yt automation macro      <list|get|create|update|delete>                       # без activate/deactivate
 ```
 
 Inline-флаги (`--name`, `--active`, `--inactive`) **сливаются** поверх содержимого `--json-file`/`--json-stdin` на верхнем уровне body. Удобно для шаблонов: один JSON-файл — разные `--name` / `--active` per call.
+
+`--version <n>` — версия триггера/автодействия (optimistic locking). API требует её (или заголовок `If-Match`) на любом PATCH: без версии `update`/`activate`/`deactivate` возвращают `428 version: Необходимо указать либо параметр 'version', либо значение заголовка If-Match`. Принимается она только query-параметром `?version=<n>` — поле `version` в JSON-теле даёт `400 version: Incorrect data format`.
+
+Поэтому на `update` CLI сам вырезает корневое поле `version` из тела и, если явный `--version` не передан, подставляет его значение в query. Флаг, если он задан, побеждает значение из тела; поле из отправляемого JSON убирается в любом случае. Для `activate`/`deactivate` тело фиксированное (`{"active":…}`), там версия задаётся только флагом.
+
+**Тело для `create`/`update` пишется вручную — вывод `get` в него не пайпится.** У ресурса два несовместимых JSON-формата: тот, что отдаёт `GET`, и тот, что принимает запись. CLI их не конвертирует (кроме `version`, см. выше) — тело идёт в API как есть.
+
+Write-формат действия `Update` — плоский словарь `<fieldId>: <value>`:
+
+```json
+{"type": "Update", "update": {"6a846c8ad035c8117efac652--frontier": -500}}
+```
+
+`<value>` — либо литерал (число, строка, `null` для очистки поля), либо объект-оператор для multi-value полей: `{"add": …}`, `{"remove": …}`, `{"set": …}`.
+
+`GET` то же самое действие отдаёт массивом — это **read-формат**, отправлять его обратно нельзя (`400 actions.update: Incorrect data format`). Ключ словаря собирается из `field.id` каждого элемента:
+
+```json
+// было (из get) — так НЕ отправлять
+{"type": "Update", "id": 1, "update": [
+  {"field": {"id": "6a846c8ad035c8117efac652--frontier", "display": "Рубеж"}, "update": {"set": -500}}]}
+
+// стало (для create/update)
+{"type": "Update", "update": {"6a846c8ad035c8117efac652--frontier": -500}}
+```
+
+Корень GET-ответа тоже нельзя пересылать целиком: он несёт read-only поля, и PATCH отклоняет каждое отдельным `400 <field>: Incorrect data format` — у автодействия это `id`, `self`, `queue`, `created`, `updated`, `createdBy`, `owner`, `totalIssuesProcessed`, у триггера `id`, `self`, `queue`, `createdBy`, `owner`. Исключение — `version`, его CLI вырезает сам (абзац выше). Так что для `update` тело собирается заново либо чистится руками; `get`, отправленный в `update` напрямую, всегда даёт 400.
 
 То же merge-поведение применяется во всех командах с `--json-file`/`--json-stdin` (`issue create`, `issue update`, `comment add`, `worklog add`, `component create`, `version create`, …): typed-флаги больше не взаимоисключающиеся с raw-JSON, а перекрывают поля верхнего уровня. Для вложенных полей (например, `lead.id`) inline-флаги игнорируются — нужен raw-JSON.
 

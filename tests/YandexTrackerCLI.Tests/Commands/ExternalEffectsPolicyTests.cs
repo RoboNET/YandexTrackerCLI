@@ -254,6 +254,11 @@ public sealed class ExternalEffectsPolicyTests
     [Arguments("automation trigger create --queue DEV --name t")]
     [Arguments("automation trigger update 7 --queue DEV --name t")]
     [Arguments("automation trigger delete 7 --queue DEV")]
+    // Флаг --version дописывает ?version=N к пути: query не должен уводить запрос
+    // мимо guard-пайплайна (сегменты сверяются после отделения query).
+    [Arguments("automation trigger deactivate 7 --queue DEV --version 3")]
+    [Arguments("automation autoaction update 7 --queue DEV --name a --version 3")]
+    [Arguments("automation autoaction activate 7 --queue DEV --version 3")]
     [Arguments("automation autoaction create --queue DEV --name a")]
     [Arguments("automation autoaction delete 7 --queue DEV")]
     [Arguments("automation macro create --queue DEV --name m")]
