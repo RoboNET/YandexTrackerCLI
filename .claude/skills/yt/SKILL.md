@@ -249,16 +249,30 @@ yt field list --queue TECH  # поля очереди
 yt automation trigger    list   --queue TECH
 yt automation trigger    get    <id> --queue TECH
 yt automation trigger    create --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
-yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive]
+yt automation trigger    update <id> --queue TECH --json-file trg.json [--name "..."] [--active|--inactive] [--version <n>]
 yt automation trigger    delete <id> --queue TECH
-yt automation trigger    activate   <id> --queue TECH
-yt automation trigger    deactivate <id> --queue TECH
+yt automation trigger    activate   <id> --queue TECH [--version <n>]
+yt automation trigger    deactivate <id> --queue TECH [--version <n>]
 
 yt automation autoaction <list|get|create|update|delete|activate|deactivate>   # те же опции
+                                                                              # (update/activate/deactivate — тоже [--version <n>])
 yt automation macro      <list|get|create|update|delete>                       # без activate/deactivate
 ```
 
 Inline-флаги (`--name`, `--active`, `--inactive`) **сливаются** поверх содержимого `--json-file`/`--json-stdin` на верхнем уровне body. Удобно для шаблонов: один JSON-файл — разные `--name` / `--active` per call.
+
+`--version <n>` — версия триггера/автодействия (optimistic locking). API требует её (или заголовок `If-Match`) на любом PATCH: без версии `update`/`activate`/`deactivate` возвращают `428 version: Необходимо указать либо параметр 'version', либо значение заголовка If-Match`. Принимается она только query-параметром `?version=<n>` — поле `version` в JSON-теле даёт `400 version: Incorrect data format`.
+
+Поэтому на `update` CLI сам вырезает корневое поле `version` из тела и, если явный `--version` не передан, подставляет его значение в query. Флаг, если он задан, побеждает значение из тела; поле из отправляемого JSON убирается в любом случае. Для `activate`/`deactivate` тело фиксированное (`{"active":…}`), там версия задаётся только флагом.
+
+Действия `type: "Update"` GET отдаёт в read-формате (массив `{"field":{"id":…},"update":{"set":…}}`), а API на запись принимает только плоский словарь `{"<fieldId>": <value>}`. CLI конвертирует read-формат в write-формат автоматически на `create`/`update`, разворачивая при этом обёртку `{"set": X}` в голое `X` (обёртки `add`/`remove` — multi-value семантика — остаются как есть).
+
+Итого типовой round-trip работает без ручной правки JSON:
+
+```bash
+yt automation autoaction get 3 --queue TECH --format json > aa.json   # правим aa.json
+yt automation autoaction update 3 --queue TECH --json-file aa.json    # version и формат — на CLI
+```
 
 То же merge-поведение применяется во всех командах с `--json-file`/`--json-stdin` (`issue create`, `issue update`, `comment add`, `worklog add`, `component create`, `version create`, …): typed-флаги больше не взаимоисключающиеся с raw-JSON, а перекрывают поля верхнего уровня. Для вложенных полей (например, `lead.id`) inline-флаги игнорируются — нужен raw-JSON.
 

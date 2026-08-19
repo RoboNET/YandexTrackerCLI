@@ -11,6 +11,12 @@ using Output;
 /// источника (<c>--json-file</c> / <c>--json-stdin</c>) и inline-флагов
 /// (<c>--name</c>, <c>--active</c>, <c>--inactive</c>) через
 /// <see cref="JsonBodyReader.ReadAndMerge"/>.
+/// Действия <c>Update</c> в read-формате приводятся к write-формату через
+/// <see cref="AutomationActionBodyNormalizer.Normalize"/>.
+/// Опциональный <c>--version</c> добавляется query-параметром: API требует
+/// версию (или <c>If-Match</c>) для PATCH.
+/// Поле <c>version</c> из тела (его отдаёт GET, но PATCH его не принимает)
+/// вырезается и, если флаг не задан, используется как значение query-параметра.
 /// </summary>
 public static class AutoactionUpdateCommand
 {
@@ -27,6 +33,7 @@ public static class AutoactionUpdateCommand
         var inactiveOpt = new Option<bool>("--inactive") { Description = "Override active=false." };
         var jsonFileOpt = new Option<string?>("--json-file") { Description = "Путь к JSON-файлу." };
         var jsonStdinOpt = new Option<bool>("--json-stdin") { Description = "Читать JSON-тело из stdin." };
+        var versionOpt = AutomationVersionOption.Create("автодействия");
 
         var cmd = new Command("update", "Обновить автодействие (PATCH /v3/queues/{q}/autoactions/{id}).");
         cmd.Arguments.Add(idArg);
@@ -36,6 +43,7 @@ public static class AutoactionUpdateCommand
         cmd.Options.Add(inactiveOpt);
         cmd.Options.Add(jsonFileOpt);
         cmd.Options.Add(jsonStdinOpt);
+        cmd.Options.Add(versionOpt);
 
         cmd.SetAction(async (pr, ct) =>
         {
@@ -46,6 +54,7 @@ public static class AutoactionUpdateCommand
                 var name = pr.GetValue(nameOpt);
                 var active = pr.GetValue(activeOpt);
                 var inactive = pr.GetValue(inactiveOpt);
+                var version = pr.GetValue(versionOpt);
 
                 if (active && inactive)
                 {
@@ -71,6 +80,10 @@ public static class AutoactionUpdateCommand
                     pr.GetValue(jsonFileOpt), pr.GetValue(jsonStdinOpt), Console.In, overrides)
                     ?? throw new TrackerException(ErrorCode.InvalidArgs,
                         "Specify --json-file, --json-stdin, or inline flags.");
+                body = AutomationActionBodyNormalizer.Normalize(body);
+                // Поле version приходит из GET, но в теле PATCH запрещено:
+                // вырезаем его и, если явного флага нет, используем как версию запроса.
+                body = AutomationVersionExtractor.StripVersion(body, out var bodyVersion);
 
                 using var ctx = await TrackerContextFactory.CreateAsync(
                     profileName: pr.GetValue(RootCommandBuilder.ProfileOption),
@@ -81,9 +94,11 @@ public static class AutoactionUpdateCommand
                     cliFormat: pr.GetValue(RootCommandBuilder.FormatOption),
                     ct: ct);
 
-                var result = await ctx.Client.PatchJsonAsync(
+                var path = AutomationVersionOption.AppendVersionQuery(
                     $"queues/{Uri.EscapeDataString(queue)}/autoactions/{Uri.EscapeDataString(id)}",
-                    body, ct);
+                    version ?? bodyVersion);
+
+                var result = await ctx.Client.PatchJsonAsync(path, body, ct);
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat,
                     pretty: !Console.IsOutputRedirected);
                 return 0;

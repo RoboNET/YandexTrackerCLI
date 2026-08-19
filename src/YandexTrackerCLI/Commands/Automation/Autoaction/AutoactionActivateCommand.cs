@@ -9,6 +9,8 @@ using Output;
 /// выполняет <c>PATCH /v3/queues/{queue}/autoactions/{id}</c> с фиксированным
 /// телом <c>{"active":true}</c>. Отдельная сборка тела (без merge) гарантирует,
 /// что значение поля <c>active</c> не подменяется пользовательскими override'ами.
+/// Опциональный <c>--version</c> добавляется query-параметром: API требует
+/// версию (или <c>If-Match</c>) для PATCH.
 /// </summary>
 public static class AutoactionActivateCommand
 {
@@ -32,10 +34,12 @@ public static class AutoactionActivateCommand
     {
         var idArg = new Argument<string>("id") { Description = "Идентификатор автодействия." };
         var queueOpt = new Option<string>("--queue") { Description = "Ключ очереди.", Required = true };
+        var versionOpt = AutomationVersionOption.Create("автодействия");
 
         var cmd = new Command(verb, desc);
         cmd.Arguments.Add(idArg);
         cmd.Options.Add(queueOpt);
+        cmd.Options.Add(versionOpt);
 
         cmd.SetAction(async (pr, ct) =>
         {
@@ -52,10 +56,13 @@ public static class AutoactionActivateCommand
 
                 var id = pr.GetValue(idArg)!;
                 var queue = pr.GetValue(queueOpt)!;
+                var version = pr.GetValue(versionOpt);
                 var body = target ? """{"active":true}""" : """{"active":false}""";
-                var result = await ctx.Client.PatchJsonAsync(
+                var path = AutomationVersionOption.AppendVersionQuery(
                     $"queues/{Uri.EscapeDataString(queue)}/autoactions/{Uri.EscapeDataString(id)}",
-                    body, ct);
+                    version);
+
+                var result = await ctx.Client.PatchJsonAsync(path, body, ct);
                 JsonWriter.Write(Console.Out, result, ctx.EffectiveOutputFormat,
                     pretty: !Console.IsOutputRedirected);
                 return 0;
