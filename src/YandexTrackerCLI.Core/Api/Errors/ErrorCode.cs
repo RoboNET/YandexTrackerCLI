@@ -25,6 +25,14 @@ public enum ErrorCode
     /// by definition — never treat the output of a <see cref="Cancelled"/> run as a full answer.
     /// </summary>
     Cancelled,
+
+    /// <summary>
+    /// The server rejected a mutation because the resource version supplied for optimistic
+    /// locking no longer matches the stored one — someone else changed the resource after it
+    /// was read. Distinct from <see cref="Unexpected"/> so scripts can retry the
+    /// read-modify-write cycle instead of treating the failure as a bug.
+    /// </summary>
+    VersionConflict,
 }
 
 public static class ErrorCodeExtensions
@@ -42,6 +50,7 @@ public static class ErrorCodeExtensions
         ErrorCode.ConfigError  => 9,
         ErrorCode.PolicyViolation => 10,
         ErrorCode.Cancelled    => 11,
+        ErrorCode.VersionConflict => 12,
         _                      => 1,
     };
 
@@ -58,6 +67,7 @@ public static class ErrorCodeExtensions
         ErrorCode.ConfigError  => "config_error",
         ErrorCode.PolicyViolation => "policy_violation",
         ErrorCode.Cancelled    => "cancelled",
+        ErrorCode.VersionConflict => "version_conflict",
         _                      => "unexpected",
     };
 }

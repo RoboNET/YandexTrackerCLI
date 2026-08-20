@@ -1,10 +1,25 @@
 namespace YandexTrackerCLI.Output;
 
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 using Core.Api.Errors;
 
 public static class ErrorWriter
 {
+    /// <summary>
+    /// Кодировщик, оставляющий не-ASCII символы как есть.
+    /// </summary>
+    /// <remarks>
+    /// Дефолтный кодировщик экранирует всё за пределами ASCII, и сообщение на русском
+    /// доезжает до stderr в виде <c>Ве...</c> — формально валидный JSON, который
+    /// человек прочитать не может. <see cref="UnicodeRanges.All"/> снимает именно это
+    /// экранирование, оставляя нетронутым экранирование HTML-опасных символов
+    /// (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>) — в отличие от
+    /// <see cref="JavaScriptEncoder.UnsafeRelaxedJsonEscaping"/>.
+    /// </remarks>
+    private static readonly JavaScriptEncoder MessageEncoder = JavaScriptEncoder.Create(UnicodeRanges.All);
+
     public static void Write(TextWriter stderr, TrackerException ex) =>
         stderr.WriteLine(Render(ex));
 
@@ -18,7 +33,7 @@ public static class ErrorWriter
     {
         var err = ex.ToError();
         using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Encoder = MessageEncoder }))
         {
             w.WriteStartObject();
             w.WriteStartObject("error");

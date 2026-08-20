@@ -42,6 +42,11 @@ public static class IssueGetCommand
                 var key = parseResult.GetValue(keyArg)!;
                 var result = await ctx.Client.GetAsync($"issues/{Uri.EscapeDataString(key)}", ct);
 
+                // Момент, когда пользователь прочитал задачу, — единственная честная точка
+                // отсчёта для optimistic locking на последующем update.
+                await ResourceVersionFlow.Remember(
+                    ctx, ResourceVersionFlow.IssueResource, key, result, ct);
+
                 if (ctx.EffectiveOutputFormat == OutputFormat.Table)
                 {
                     using var pager = PagerWriter.Create(ctx.TerminalCapabilities, Console.Out);

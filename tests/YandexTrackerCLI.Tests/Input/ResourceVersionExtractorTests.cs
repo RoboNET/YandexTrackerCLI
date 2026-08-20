@@ -5,10 +5,10 @@ using TUnit.Core;
 using YandexTrackerCLI.Input;
 
 /// <summary>
-/// Тесты <see cref="AutomationVersionExtractor"/>: вырезание корневого поля
+/// Тесты <see cref="ResourceVersionExtractor"/>: вырезание корневого поля
 /// <c>version</c> (которое отдаёт GET, но не принимает PATCH) и извлечение его значения.
 /// </summary>
-public sealed class AutomationVersionExtractorTests
+public sealed class ResourceVersionExtractorTests
 {
     /// <summary>
     /// Числовое <c>version</c> извлекается, из тела удаляется, остальные поля сохраняются.
@@ -18,7 +18,7 @@ public sealed class AutomationVersionExtractorTests
     {
         var raw = """{"id":17,"version":42,"name":"a","actions":[{"type":"Transition"}]}""";
 
-        var result = AutomationVersionExtractor.StripVersion(raw, out var version);
+        var result = ResourceVersionExtractor.StripVersion(raw, out var version);
 
         await Assert.That(version).IsEqualTo(42L);
         using var doc = JsonDocument.Parse(result);
@@ -36,7 +36,7 @@ public sealed class AutomationVersionExtractorTests
     {
         var raw = """{"name":"a","active":true}""";
 
-        var result = AutomationVersionExtractor.StripVersion(raw, out var version);
+        var result = ResourceVersionExtractor.StripVersion(raw, out var version);
 
         await Assert.That(version).IsNull();
         await Assert.That(result).IsEqualTo(raw);
@@ -50,7 +50,7 @@ public sealed class AutomationVersionExtractorTests
     {
         var raw = """{"name":"a","version":"42"}""";
 
-        var result = AutomationVersionExtractor.StripVersion(raw, out var version);
+        var result = ResourceVersionExtractor.StripVersion(raw, out var version);
 
         await Assert.That(version).IsNull();
         await Assert.That(result).IsEqualTo(raw);
@@ -64,7 +64,7 @@ public sealed class AutomationVersionExtractorTests
     {
         var raw = """{"name":"a","meta":{"version":9}}""";
 
-        var result = AutomationVersionExtractor.StripVersion(raw, out var version);
+        var result = ResourceVersionExtractor.StripVersion(raw, out var version);
 
         await Assert.That(version).IsNull();
         await Assert.That(result).IsEqualTo(raw);
@@ -78,7 +78,7 @@ public sealed class AutomationVersionExtractorTests
     {
         var raw = """[{"version":1}]""";
 
-        var result = AutomationVersionExtractor.StripVersion(raw, out var version);
+        var result = ResourceVersionExtractor.StripVersion(raw, out var version);
 
         await Assert.That(version).IsNull();
         await Assert.That(result).IsEqualTo(raw);
@@ -92,11 +92,11 @@ public sealed class AutomationVersionExtractorTests
     {
         var broken = """{"version":42,""";
 
-        var result = AutomationVersionExtractor.StripVersion(broken, out var version);
+        var result = ResourceVersionExtractor.StripVersion(broken, out var version);
         await Assert.That(version).IsNull();
         await Assert.That(result).IsEqualTo(broken);
 
-        var empty = AutomationVersionExtractor.StripVersion(string.Empty, out var emptyVersion);
+        var empty = ResourceVersionExtractor.StripVersion(string.Empty, out var emptyVersion);
         await Assert.That(emptyVersion).IsNull();
         await Assert.That(empty).IsEqualTo(string.Empty);
     }

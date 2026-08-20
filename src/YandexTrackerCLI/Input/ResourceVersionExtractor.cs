@@ -4,10 +4,11 @@ using System.Text;
 using System.Text.Json;
 
 /// <summary>
-/// Извлекает и вырезает корневое поле <c>version</c> из тела запроса автоматизации.
+/// Извлекает и вырезает корневое поле <c>version</c> из тела PATCH-запроса.
 /// <para>
-/// GET отдаёт триггер/автодействие вместе с полем <c>version</c>, но API на запись
-/// его не принимает: <c>PATCH</c> с <c>version</c> в теле отвечает
+/// GET отдаёт ресурс (задачу, компонент, триггер, автодействие) вместе с полем
+/// <c>version</c>, но API на запись его не принимает: <c>PATCH</c> с <c>version</c>
+/// в теле отвечает
 /// <c>400 version: Incorrect data format</c>, а версию ждёт query-параметром
 /// (<c>?version=N</c>) либо заголовком <c>If-Match</c>. Чтобы round-trip
 /// «<c>get</c> → правка → <c>update</c>» работал без ручной чистки JSON, CLI сам
@@ -15,7 +16,7 @@ using System.Text.Json;
 /// </para>
 /// AOT-friendly: только <see cref="JsonDocument"/> / <see cref="Utf8JsonWriter"/>, без рефлексии.
 /// </summary>
-public static class AutomationVersionExtractor
+public static class ResourceVersionExtractor
 {
     private const string VersionProperty = "version";
 

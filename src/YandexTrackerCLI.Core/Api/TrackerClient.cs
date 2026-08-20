@@ -384,6 +384,11 @@ public sealed class TrackerClient
                 401 => ErrorCode.AuthFailed,
                 403 => ErrorCode.Forbidden,
                 404 => ErrorCode.NotFound,
+                // Оптимистическая блокировка: 409 — версия разошлась, 412 — не прошло
+                // предусловие If-Match/?version. Оба означают одно и то же для вызывающего:
+                // ресурс изменили после того, как его прочитали. 428 сюда не входит — это
+                // «версию вообще не прислали», отдельный по смыслу отказ.
+                409 or 412 => ErrorCode.VersionConflict,
                 429 => ErrorCode.RateLimited,
                 >= 500 and < 600 => ErrorCode.ServerError,
                 _ => ErrorCode.Unexpected,
